@@ -17,6 +17,7 @@
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",
     "expo": "~54.0.20",
+    "expo-av": "~16.0.7",
     "expo-barcode-scanner": "^13.0.1",
     "expo-camera": "~17.0.8",
     "expo-constants": "~18.0.10",

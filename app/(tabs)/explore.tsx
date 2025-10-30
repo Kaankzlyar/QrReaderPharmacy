@@ -1,112 +1,186 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import React, { useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
+import { useScanStore } from '../../hooks/useScanStore';
+import { theme } from '../../constants/theme';
 
-import { Collapsible } from '@/components/ui/collapsible';
-import { ExternalLink } from '@/components/external-link';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Fonts } from '@/constants/theme';
+export default function ProductsScreen() {
+  const { products, loadData, clearAll } = useScanStore();
 
-export default function TabTwoScreen() {
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const totalProducts = Object.keys(products).length;
+  const totalScans = Object.values(products).reduce((sum, p) => sum + p.codes.length, 0);
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#D0D0D0', dark: '#353636' }}
-      headerImage={
-        <IconSymbol
-          size={310}
-          color="#808080"
-          name="chevron.left.forwardslash.chevron.right"
-          style={styles.headerImage}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText
-          type="title"
-          style={{
-            fontFamily: Fonts.rounded,
-          }}>
-          Explore
-        </ThemedText>
-      </ThemedView>
-      <ThemedText>This app includes example code to help you get started.</ThemedText>
-      <Collapsible title="File-based routing">
-        <ThemedText>
-          This app has two screens:{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/explore.tsx</ThemedText>
-        </ThemedText>
-        <ThemedText>
-          The layout file in <ThemedText type="defaultSemiBold">app/(tabs)/_layout.tsx</ThemedText>{' '}
-          sets up the tab navigator.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/router/introduction">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Android, iOS, and web support">
-        <ThemedText>
-          You can open this project on Android, iOS, and the web. To open the web version, press{' '}
-          <ThemedText type="defaultSemiBold">w</ThemedText> in the terminal running this project.
-        </ThemedText>
-      </Collapsible>
-      <Collapsible title="Images">
-        <ThemedText>
-          For static images, you can use the <ThemedText type="defaultSemiBold">@2x</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">@3x</ThemedText> suffixes to provide files for
-          different screen densities
-        </ThemedText>
-        <Image
-          source={require('@/assets/images/react-logo.png')}
-          style={{ width: 100, height: 100, alignSelf: 'center' }}
-        />
-        <ExternalLink href="https://reactnative.dev/docs/images">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Light and dark mode components">
-        <ThemedText>
-          This template has light and dark mode support. The{' '}
-          <ThemedText type="defaultSemiBold">useColorScheme()</ThemedText> hook lets you inspect
-          what the user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Animations">
-        <ThemedText>
-          This template includes an example of an animated component. The{' '}
-          <ThemedText type="defaultSemiBold">components/HelloWave.tsx</ThemedText> component uses
-          the powerful{' '}
-          <ThemedText type="defaultSemiBold" style={{ fontFamily: Fonts.mono }}>
-            react-native-reanimated
-          </ThemedText>{' '}
-          library to create a waving hand animation.
-        </ThemedText>
-        {Platform.select({
-          ios: (
-            <ThemedText>
-              The <ThemedText type="defaultSemiBold">components/ParallaxScrollView.tsx</ThemedText>{' '}
-              component provides a parallax effect for the header image.
-            </ThemedText>
-          ),
-        })}
-      </Collapsible>
-    </ParallaxScrollView>
+    <View style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>📦 Products</Text>
+        <Text style={styles.headerSubtitle}>
+          {totalProducts} products • {totalScans} scans
+        </Text>
+      </View>
+
+      {/* Product List */}
+      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+        {Object.values(products).length === 0 ? (
+          <View style={styles.emptyState}>
+            <MaterialIcons name="inventory-2" size={64} color={theme.colors.subtleText} />
+            <Text style={styles.emptyText}>No products scanned yet</Text>
+            <Text style={styles.emptySubtext}>Scan QR codes to add products</Text>
+          </View>
+        ) : (
+          Object.values(products).map((product) => (
+            <View key={product.id} style={styles.productCard}>
+              <View style={styles.productHeader}>
+                <MaterialIcons name="medication" size={24} color={theme.colors.accent} />
+                <View style={styles.productInfo}>
+                  <Text style={styles.productName}>{product.id}</Text>
+                  <Text style={styles.productCount}>{product.codes.length} items scanned</Text>
+                </View>
+              </View>
+              
+              {/* Code List */}
+              <View style={styles.codeList}>
+                {product.codes.map((code, index) => (
+                  <View key={index} style={styles.codeItem}>
+                    <MaterialIcons name="qr-code-2" size={16} color={theme.colors.subtleText} />
+                    <Text style={styles.codeText}>{code}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          ))
+        )}
+      </ScrollView>
+
+      {/* Clear Button */}
+      {Object.values(products).length > 0 && (
+        <View style={styles.footer}>
+          <TouchableOpacity style={styles.clearButton} onPress={clearAll}>
+            <MaterialIcons name="delete-outline" size={20} color="white" />
+            <Text style={styles.clearButtonText}>Clear All Products</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  headerImage: {
-    color: '#808080',
-    bottom: -90,
-    left: -35,
-    position: 'absolute',
+  container: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
   },
-  titleContainer: {
+  header: {
+    backgroundColor: theme.colors.surface,
+    padding: theme.spacing.lg,
+    paddingTop: 60,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E5E5',
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontFamily: theme.fonts.bold,
+    color: theme.colors.text,
+    marginBottom: 4,
+  },
+  headerSubtitle: {
+    fontSize: 14,
+    fontFamily: theme.fonts.regular,
+    color: theme.colors.subtleText,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: theme.spacing.md,
+  },
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 80,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontFamily: theme.fonts.medium,
+    color: theme.colors.text,
+    marginTop: theme.spacing.md,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    fontFamily: theme.fonts.regular,
+    color: theme.colors.subtleText,
+    marginTop: 4,
+  },
+  productCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+    marginBottom: theme.spacing.md,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  productHeader: {
     flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: theme.spacing.md,
+  },
+  productInfo: {
+    marginLeft: theme.spacing.sm,
+    flex: 1,
+  },
+  productName: {
+    fontSize: 18,
+    fontFamily: theme.fonts.bold,
+    color: theme.colors.text,
+  },
+  productCount: {
+    fontSize: 13,
+    fontFamily: theme.fonts.regular,
+    color: theme.colors.subtleText,
+    marginTop: 2,
+  },
+  codeList: {
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+    paddingTop: theme.spacing.sm,
+  },
+  codeItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  codeText: {
+    fontSize: 13,
+    fontFamily: theme.fonts.regular,
+    color: theme.colors.text,
+    marginLeft: 8,
+  },
+  footer: {
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E5E5',
+  },
+  clearButton: {
+    backgroundColor: theme.colors.danger,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.md,
+    paddingVertical: 14,
     gap: 8,
+  },
+  clearButtonText: {
+    color: 'white',
+    fontFamily: theme.fonts.medium,
+    fontSize: 16,
   },
 });

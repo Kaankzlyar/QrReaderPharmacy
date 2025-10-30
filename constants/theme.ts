@@ -8,6 +8,34 @@ import { Platform } from 'react-native';
 const tintColorLight = '#0a7ea4';
 const tintColorDark = '#fff';
 
+export const theme = {
+  colors: {
+    background: '#F5F5F5',
+    surface: '#FFFFFF',
+    primary: '#007AFF',
+    accent: '#43AA8B',
+    text: '#1A1A1A',
+    subtleText: '#8E8E93',
+    danger: '#E63946',
+  },
+  fonts: {
+    regular: 'Inter-Regular',
+    medium: 'Inter-Medium',
+    bold: 'Poppins-SemiBold',
+  },
+  spacing: {
+    sm: 8,
+    md: 16,
+    lg: 24,
+  },
+  radius: {
+    sm: 8,
+    md: 12,
+    lg: 16,
+  },
+};
+
+
 export const Colors = {
   light: {
     text: '#11181C',
