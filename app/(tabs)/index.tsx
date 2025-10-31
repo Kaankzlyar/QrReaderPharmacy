@@ -15,16 +15,60 @@ interface BarcodeBox {
   timestamp: number;
 }
 
+interface DetectionTrack {
+  code: string;
+  frame: { x: number; y: number; width: number; height: number };
+  hitCount: number;
+  lastSeen: number;
+}
+
+// Calculate Intersection over Union for two rectangles
+const calculateIoU = (
+  rect1: { x: number; y: number; width: number; height: number },
+  rect2: { x: number; y: number; width: number; height: number }
+): number => {
+  const x1 = Math.max(rect1.x, rect2.x);
+  const y1 = Math.max(rect1.y, rect2.y);
+  const x2 = Math.min(rect1.x + rect1.width, rect2.x + rect2.width);
+  const y2 = Math.min(rect1.y + rect1.height, rect2.y + rect2.height);
+
+  if (x2 < x1 || y2 < y1) return 0;
+
+  const intersection = (x2 - x1) * (y2 - y1);
+  const area1 = rect1.width * rect1.height;
+  const area2 = rect2.width * rect2.height;
+  const union = area1 + area2 - intersection;
+
+  return intersection / union;
+};
+
 export default function ScannerScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [barcodeBoxes, setBarcodeBoxes] = useState<BarcodeBox[]>([]);
   const [scannedCodes, setScannedCodes] = useState<Set<string>>(new Set());
   const [permanentMarkers, setPermanentMarkers] = useState<Map<string, BarcodeBox>>(new Map());
+  const [detectionTracks, setDetectionTracks] = useState<DetectionTrack[]>([]);
+  const [torchOn, setTorchOn] = useState(false);
 
   const VF_WIDTH_RATIO = 0.75;
   const VF_HEIGHT_RATIO = 0.55;
+  const CONFIRMATION_THRESHOLD = 3; // Require 3 detections before confirming
+  const IOU_THRESHOLD = 0.4; // Minimum IoU to match tracks
+  const MIN_BOX_AREA_RATIO = 0.02; // Minimum 2% of screen area
+  const MIN_ASPECT_RATIO = 0.7; // Minimum width/height ratio
+  const MAX_ASPECT_RATIO = 1.4; // Maximum width/height ratio
+  const TRACK_TIMEOUT = 2000; // Remove tracks not seen for 2 seconds
+  
   const { products, addScan, loadData, clearAll } = useScanStore();
   const device = useCameraDevice("back");
+
+  // Select camera format: 720p @ 30fps for balance of quality and performance
+  const format = device?.formats.find(
+    (f) => 
+      f.videoWidth === 1280 && 
+      f.videoHeight === 720 && 
+      f.maxFps >= 30
+  ) || device?.formats[0];
 
   useEffect(() => {
     (async () => {
@@ -44,62 +88,128 @@ export default function ScannerScreen() {
   const pointInRect = (x: number, y: number, rect: { left: number; top: number; width: number; height: number }) =>
     x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height;
 
+  // Clean up old tracks periodically
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setDetectionTracks((prev) => 
+        prev.filter((track) => now - track.lastSeen < TRACK_TIMEOUT)
+      );
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   const codeScanner = useCodeScanner({
     codeTypes: ["qr"],
     onCodeScanned: useCallback((codes) => {
       if (codes.length === 0) return;
+      
+      const now = Date.now();
+      const screenArea = SCREEN_W * SCREEN_H;
+      const newTracks: DetectionTrack[] = [...detectionTracks];
+
       for (const code of codes) {
         const data = code.value;
         if (!data || !code.frame) continue;
 
-        const centerX = code.frame.x + code.frame.width / 2;
-        const centerY = code.frame.y + code.frame.height / 2;
+        const frame = code.frame;
+        
+        // Quality filter 1: Check if center is in viewfinder
+        const centerX = frame.x + frame.width / 2;
+        const centerY = frame.y + frame.height / 2;
         if (!pointInRect(centerX, centerY, viewfinderRect)) continue;
+
+        // Quality filter 2: Minimum size (2% of screen)
+        const boxArea = frame.width * frame.height;
+        if (boxArea / screenArea < MIN_BOX_AREA_RATIO) continue;
+
+        // Quality filter 3: Aspect ratio (squareness check)
+        const aspectRatio = frame.width / frame.height;
+        if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
+
+        // Already confirmed and scanned?
         if (scannedCodes.has(data)) continue;
+
+        // Try to match with existing track
+        let matchedTrack: DetectionTrack | undefined;
+        let matchedIndex = -1;
         
-        console.log("[QR DETECTED]", { data, frame: code.frame });
-        
-        const productId = data.split("-")[0];
-        const existing = products[productId];
-        if (existing?.codes.includes(data)) continue;
-        
-        setScannedCodes((prev) => new Set([...prev, data]));
-        
-        (async () => {
-          let scanSuccess = false;
-          try {
-            await addScan(data, productId);
-            scanSuccess = true;
-            console.log("✅ Scan added successfully:", { data, productId });
-          } catch (error) {
-            console.error("❌ Scan failed:", error);
-          }
-          
-          const id = `${data}-${Date.now()}`;
-          const newBox: BarcodeBox = {
-            id,
-            data,
-            color: scanSuccess ? theme.colors.accent : theme.colors.danger,
-            frame: code.frame!,
-            timestamp: Date.now(),
-          };
-          
-          setBarcodeBoxes((prev) => [...prev, newBox].slice(-4));
-          
-          // Auto-remove after delay
-          setTimeout(() => {
-            setBarcodeBoxes((prev) => prev.filter((x) => x.id !== id));
-            if (!scanSuccess) {
-              setScannedCodes((prev) => { const newSet = new Set(prev); newSet.delete(data); return newSet; });
+        for (let i = 0; i < newTracks.length; i++) {
+          const track = newTracks[i];
+          if (track.code === data) {
+            const iou = calculateIoU(track.frame, frame);
+            if (iou >= IOU_THRESHOLD) {
+              matchedTrack = track;
+              matchedIndex = i;
+              break;
             }
-          }, scanSuccess ? 1800 : 500);
-          
-          if (scanSuccess && !permanentMarkers.has(data)) {
-            setPermanentMarkers((prev) => new Map(prev).set(data, { ...newBox, id: `permanent-${data}` }));
           }
-        })();
+        }
+
+        if (matchedTrack) {
+          // Update existing track
+          matchedTrack.hitCount++;
+          matchedTrack.frame = frame;
+          matchedTrack.lastSeen = now;
+
+          // Check if track is confirmed
+          if (matchedTrack.hitCount >= CONFIRMATION_THRESHOLD && !scannedCodes.has(data)) {
+            console.log("[QR CONFIRMED]", { data, frame, hitCount: matchedTrack.hitCount });
+            
+            const productId = data.split("-")[0];
+            const existing = products[productId];
+            if (existing?.codes.includes(data)) continue;
+            
+            setScannedCodes((prev) => new Set([...prev, data]));
+            
+            (async () => {
+              let scanSuccess = false;
+              try {
+                await addScan(data, productId);
+                scanSuccess = true;
+                console.log("✅ Scan added successfully:", { data, productId });
+              } catch (error) {
+                console.error("❌ Scan failed:", error);
+              }
+              
+              const id = `${data}-${Date.now()}`;
+              const newBox: BarcodeBox = {
+                id,
+                data,
+                color: scanSuccess ? theme.colors.accent : theme.colors.danger,
+                frame: frame,
+                timestamp: Date.now(),
+              };
+              
+              setBarcodeBoxes((prev) => [...prev, newBox].slice(-4));
+              
+              // Auto-remove after delay
+              setTimeout(() => {
+                setBarcodeBoxes((prev) => prev.filter((x) => x.id !== id));
+                if (!scanSuccess) {
+                  setScannedCodes((prev) => { const newSet = new Set(prev); newSet.delete(data); return newSet; });
+                }
+              }, scanSuccess ? 1800 : 500);
+              
+              if (scanSuccess && !permanentMarkers.has(data)) {
+                setPermanentMarkers((prev) => new Map(prev).set(data, { ...newBox, id: `permanent-${data}` }));
+              }
+            })();
+          }
+        } else {
+          // Create new track
+          newTracks.push({
+            code: data,
+            frame: frame,
+            hitCount: 1,
+            lastSeen: now,
+          });
+          console.log("[QR DETECTED]", { data, frame, hitCount: 1 });
+        }
       }
-    }, [scannedCodes, products, permanentMarkers, viewfinderRect, addScan]),
+
+      setDetectionTracks(newTracks);
+    }, [scannedCodes, products, permanentMarkers, viewfinderRect, addScan, detectionTracks]),
   });
 
   if (hasPermission === null) return <Text>Requesting camera permission…</Text>;
@@ -109,7 +219,15 @@ export default function ScannerScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.scannerArea}>
-        <Camera style={StyleSheet.absoluteFill} device={device} isActive={true} codeScanner={codeScanner} />
+        <Camera 
+          style={StyleSheet.absoluteFill} 
+          device={device} 
+          isActive={true} 
+          codeScanner={codeScanner}
+          format={format}
+          fps={30}
+          torch={torchOn ? "on" : "off"}
+        />
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: vfT, backgroundColor: "#FFFFFF" }} />
           <View style={{ position: "absolute", top: vfT + vfH, left: 0, right: 0, bottom: 0, backgroundColor: "#FFFFFF" }} />
@@ -132,9 +250,15 @@ export default function ScannerScreen() {
         </View>
         <View style={styles.debugInfo}>
           <Text style={styles.debugText}>Boxes: {barcodeBoxes.length} | Markers: {permanentMarkers.size}</Text>
-          <Text style={styles.debugText}>Products: {Object.keys(products).length}</Text>
+          <Text style={styles.debugText}>Products: {Object.keys(products).length} | Tracks: {detectionTracks.length}</Text>
           <Text style={styles.debugText}>Screen: {Math.round(SCREEN_W)}x{Math.round(SCREEN_H)}</Text>
-          <TouchableOpacity onPress={() => { setPermanentMarkers(new Map()); setScannedCodes(new Set()); }} style={styles.clearMarkersBtn}>
+          <TouchableOpacity 
+            onPress={() => setTorchOn(!torchOn)} 
+            style={[styles.clearMarkersBtn, { backgroundColor: torchOn ? "#FFA500" : "#FFD700", marginBottom: 5 }]}
+          >
+            <Text style={styles.clearMarkersBtnText}>{torchOn ? "🔦 ON" : "🔦 OFF"}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => { setPermanentMarkers(new Map()); setScannedCodes(new Set()); setDetectionTracks([]); }} style={styles.clearMarkersBtn}>
             <Text style={styles.clearMarkersBtnText}>Clear Markers</Text>
           </TouchableOpacity>
         </View>
