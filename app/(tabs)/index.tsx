@@ -49,20 +49,21 @@ export default function ScannerScreen() {
   const [permanentMarkers, setPermanentMarkers] = useState<Map<string, BarcodeBox>>(new Map());
   const [detectionTracks, setDetectionTracks] = useState<DetectionTrack[]>([]);
   const [torchOn, setTorchOn] = useState(false);
+  const [previewSize, setPreviewSize] = useState<{ width: number; height: number } | null>(null);
 
-  const VF_WIDTH_RATIO = 0.75;
-  const VF_HEIGHT_RATIO = 0.55;
-  const CONFIRMATION_THRESHOLD = 3; // Require 3 detections before confirming
-  const IOU_THRESHOLD = 0.4; // Minimum IoU to match tracks
-  const MIN_BOX_AREA_RATIO = 0.02; // Minimum 2% of screen area
-  const MIN_ASPECT_RATIO = 0.7; // Minimum width/height ratio
-  const MAX_ASPECT_RATIO = 1.4; // Maximum width/height ratio
-  const TRACK_TIMEOUT = 2000; // Remove tracks not seen for 2 seconds
+  const VF_WIDTH_RATIO = 0.80;
+  const VF_HEIGHT_RATIO = 0.45; // Reduced from 0.55 to move scanning area higher
+  const CONFIRMATION_THRESHOLD = 1; // Reduced to 1 for instant confirmation
+  const IOU_THRESHOLD = 0.3; // Reduced from 0.4 for more lenient tracking
+  const MIN_BOX_AREA_RATIO = 0.01; // Reduced from 0.02 to accept smaller QR codes
+  const MIN_ASPECT_RATIO = 0.5; // More lenient (was 0.7)
+  const MAX_ASPECT_RATIO = 2; // More lenient (was 1.4)
+  const TRACK_TIMEOUT = 2000; 
+  const MAX_VISIBLE_BOXES = 8; // Increase from 4 to show more simultaneous detections
   
   const { products, addScan, loadData, clearAll } = useScanStore();
   const device = useCameraDevice("back");
 
-  // Select camera format: 720p @ 30fps for balance of quality and performance
   const format = device?.formats.find(
     (f) => 
       f.videoWidth === 1280 && 
@@ -78,17 +79,46 @@ export default function ScannerScreen() {
     })();
   }, []);
 
+  useEffect(() => {
+    if (format) {
+      const cameraAspectRatio = format.videoWidth / format.videoHeight;
+      const screenAspectRatio = SCREEN_W / SCREEN_H;
+      
+      let previewWidth = SCREEN_W;
+      let previewHeight = SCREEN_H;
+      
+      if (cameraAspectRatio > screenAspectRatio) {
+        // Camera is wider - fit to height
+        previewHeight = SCREEN_H;
+        previewWidth = SCREEN_H * cameraAspectRatio;
+      } else {
+        // Camera is taller - fit to width
+        previewWidth = SCREEN_W;
+        previewHeight = SCREEN_W / cameraAspectRatio;
+      }
+      
+      setPreviewSize({ width: previewWidth, height: previewHeight });
+      console.log("[PREVIEW SIZE]", { 
+        screen: { w: SCREEN_W, h: SCREEN_H }, 
+        camera: { w: format.videoWidth, h: format.videoHeight },
+        preview: { w: previewWidth, h: previewHeight },
+        cameraAR: cameraAspectRatio.toFixed(2),
+        screenAR: screenAspectRatio.toFixed(2)
+      });
+    }
+  }, [format]);
+
   const vfW = SCREEN_W * VF_WIDTH_RATIO;
   const vfH = SCREEN_H * VF_HEIGHT_RATIO;
   const vfL = (SCREEN_W - vfW) / 2;
-  const vfT = (SCREEN_H - vfH) / 2;
+  const vfT = (SCREEN_H - vfH) / 2 - 150;
 
   const viewfinderRect = { left: vfL, top: vfT, width: vfW, height: vfH };
+  console.log("[VIEWFINDER RECTANGLE]", viewfinderRect);
 
   const pointInRect = (x: number, y: number, rect: { left: number; top: number; width: number; height: number }) =>
     x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height;
 
-  // Clean up old tracks periodically
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
@@ -114,23 +144,19 @@ export default function ScannerScreen() {
 
         const frame = code.frame;
         
-        // Quality filter 1: Check if center is in viewfinder
         const centerX = frame.x + frame.width / 2;
         const centerY = frame.y + frame.height / 2;
-        if (!pointInRect(centerX, centerY, viewfinderRect)) continue;
+        const inViewfinder = pointInRect(centerX, centerY, viewfinderRect);
+        if (!inViewfinder) continue;
 
-        // Quality filter 2: Minimum size (2% of screen)
         const boxArea = frame.width * frame.height;
         if (boxArea / screenArea < MIN_BOX_AREA_RATIO) continue;
 
-        // Quality filter 3: Aspect ratio (squareness check)
         const aspectRatio = frame.width / frame.height;
         if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
 
-        // Already confirmed and scanned?
         if (scannedCodes.has(data)) continue;
 
-        // Try to match with existing track
         let matchedTrack: DetectionTrack | undefined;
         let matchedIndex = -1;
         
@@ -147,12 +173,10 @@ export default function ScannerScreen() {
         }
 
         if (matchedTrack) {
-          // Update existing track
           matchedTrack.hitCount++;
-          matchedTrack.frame = frame;
+          matchedTrack.frame = { ...frame };
           matchedTrack.lastSeen = now;
 
-          // Check if track is confirmed
           if (matchedTrack.hitCount >= CONFIRMATION_THRESHOLD && !scannedCodes.has(data)) {
             console.log("[QR CONFIRMED]", { data, frame, hitCount: matchedTrack.hitCount });
             
@@ -181,9 +205,8 @@ export default function ScannerScreen() {
                 timestamp: Date.now(),
               };
               
-              setBarcodeBoxes((prev) => [...prev, newBox].slice(-4));
+              setBarcodeBoxes((prev) => [...prev, newBox].slice(-8)); // Increased to show 8 boxes
               
-              // Auto-remove after delay
               setTimeout(() => {
                 setBarcodeBoxes((prev) => prev.filter((x) => x.id !== id));
                 if (!scanSuccess) {
@@ -197,7 +220,6 @@ export default function ScannerScreen() {
             })();
           }
         } else {
-          // Create new track
           newTracks.push({
             code: data,
             frame: frame,
@@ -222,22 +244,36 @@ export default function ScannerScreen() {
         <Camera 
           style={StyleSheet.absoluteFill} 
           device={device} 
-          isActive={true} 
+          isActive={true}
+          videoHdr={true}
           codeScanner={codeScanner}
           format={format}
           fps={30}
+          videoStabilizationMode= "auto"
           torch={torchOn ? "on" : "off"}
         />
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-          <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: vfT, backgroundColor: "#FFFFFF" }} />
-          <View style={{ position: "absolute", top: vfT + vfH, left: 0, right: 0, bottom: 0, backgroundColor: "#FFFFFF" }} />
-          <View style={{ position: "absolute", top: vfT, left: 0, width: vfL, height: vfH, backgroundColor: "#FFFFFF" }} />
-          <View style={{ position: "absolute", top: vfT, left: vfL + vfW, right: 0, height: vfH, backgroundColor: "#FFFFFF" }} />
           <View style={{ position: "absolute", left: vfL, top: vfT, width: vfW, height: vfH, borderRadius: 16, borderWidth: 3, borderColor: theme.colors.accent }} />
           {barcodeBoxes.map((b) => {
             const isGreen = b.color === theme.colors.accent;
+            const boxSize = Math.sqrt(b.frame.width * b.frame.height);
+            const borderWidth = Math.max(2, Math.min(4, boxSize / 30));
+            
             return (
-              <View key={b.id} style={{ position: "absolute", left: b.frame.x, top: b.frame.y, width: b.frame.width, height: b.frame.height, borderWidth: 3, borderColor: isGreen ? "#00FF00" : "#FF0000", borderRadius: 8, backgroundColor: isGreen ? "rgba(0, 255, 0, 0.2)" : "rgba(255, 0, 0, 0.2)" }} />
+              <View 
+                key={b.id} 
+                style={{ 
+                  position: "absolute", 
+                  left: b.frame.x, 
+                  top: b.frame.y, 
+                  width: b.frame.width, 
+                  height: b.frame.height, 
+                  borderWidth: borderWidth, 
+                  borderColor: isGreen ? "#00FF00" : "#FF0000", 
+                  borderRadius: 8, 
+                  backgroundColor: isGreen ? "rgba(0, 255, 0, 0.15)" : "rgba(255, 0, 0, 0.15)" 
+                }} 
+              />
             );
           })}
           {Array.from(permanentMarkers.values()).map((marker) => (
@@ -252,6 +288,9 @@ export default function ScannerScreen() {
           <Text style={styles.debugText}>Boxes: {barcodeBoxes.length} | Markers: {permanentMarkers.size}</Text>
           <Text style={styles.debugText}>Products: {Object.keys(products).length} | Tracks: {detectionTracks.length}</Text>
           <Text style={styles.debugText}>Screen: {Math.round(SCREEN_W)}x{Math.round(SCREEN_H)}</Text>
+          {previewSize && (
+            <Text style={styles.debugText}>Preview: {Math.round(previewSize.width)}x{Math.round(previewSize.height)}</Text>
+          )}
           <TouchableOpacity 
             onPress={() => setTorchOn(!torchOn)} 
             style={[styles.clearMarkersBtn, { backgroundColor: torchOn ? "#FFA500" : "#FFD700", marginBottom: 5 }]}
@@ -292,11 +331,11 @@ const styles = StyleSheet.create({
   debugText: { color: "white", fontSize: 12, marginBottom: 5 },
   clearMarkersBtn: { backgroundColor: "#FFD700", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, alignItems: "center" },
   clearMarkersBtnText: { color: "#000", fontSize: 11, fontWeight: "bold" },
-  bottomPanel: { height: 200, backgroundColor: theme.colors.surface, padding: theme.spacing.lg, borderTopLeftRadius: theme.radius.lg * 1.5, borderTopRightRadius: theme.radius.lg * 1.5, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 8, elevation: 4 },
-  title: { fontFamily: theme.fonts.bold, fontSize: 18, color: theme.colors.text, marginBottom: theme.spacing.md },
-  card: { backgroundColor: theme.colors.background, borderRadius: theme.radius.md, padding: theme.spacing.md, marginBottom: theme.spacing.sm },
-  productName: { fontFamily: theme.fonts.medium, fontSize: 16, color: theme.colors.text },
-  codeCount: { color: theme.colors.subtleText, fontSize: 13 },
+  bottomPanel: { height: 280, backgroundColor: theme.colors.surface, padding: theme.spacing.lg, borderTopLeftRadius: theme.radius.lg * 1.5, borderTopRightRadius: theme.radius.lg * 1.5, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 8, elevation: 4 },
+  title: { fontFamily: theme.fonts.bold, fontSize: 17, color: theme.colors.text, marginBottom: theme.spacing.md },
+  card: { backgroundColor: theme.colors.background, borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.sm },
+  productName: { fontFamily: theme.fonts.medium, fontSize: 20, color: theme.colors.text },
+  codeCount: { color: theme.colors.subtleText, fontSize: 12 },
   clearButton: { marginTop: theme.spacing.lg, backgroundColor: theme.colors.danger, flexDirection: "row", alignItems: "center", justifyContent: "center", borderRadius: theme.radius.md, paddingVertical: 10, gap: 8 },
   clearButtonText: { color: "white", fontFamily: theme.fonts.medium },
 });
