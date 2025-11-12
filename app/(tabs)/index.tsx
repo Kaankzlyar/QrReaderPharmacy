@@ -55,10 +55,10 @@ export default function ScannerScreen() {
   const VF_HEIGHT_RATIO = 0.45; // Reduced from 0.55 to move scanning area higher
   const CONFIRMATION_THRESHOLD = 1; // Reduced to 1 for instant confirmation
   const IOU_THRESHOLD = 0.3; // Reduced from 0.4 for more lenient tracking
-  const MIN_BOX_AREA_RATIO = 0.01; // Reduced from 0.02 to accept smaller QR codes
+  const MIN_BOX_AREA_RATIO = 0.001; // Reduced from 0.02 to accept smaller QR codes
   const MIN_ASPECT_RATIO = 0.5; // More lenient (was 0.7)
   const MAX_ASPECT_RATIO = 2; // More lenient (was 1.4)
-  const TRACK_TIMEOUT = 2000; 
+  const TRACK_TIMEOUT = 1500; 
   const MAX_VISIBLE_BOXES = 8; // Increase from 4 to show more simultaneous detections
   
   const { products, addScan, loadData, clearAll } = useScanStore();

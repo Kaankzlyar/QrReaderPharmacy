@@ -1,8 +1,9 @@
 import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { MaterialIcons } from '@expo/vector-icons';
+import { FontAwesome} from '@expo/vector-icons';
 import { useScanStore } from '../../hooks/useScanStore';
 import { theme } from '../../constants/theme';
+import { MaterialIcons } from '@expo/vector-icons';
 
 export default function ProductsScreen() {
   const { products, loadData, clearAll } = useScanStore();
@@ -18,7 +19,10 @@ export default function ProductsScreen() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>📦 Products</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+          <FontAwesome name="archive" size={24} color={theme.colors.accent} />
+          <Text style={[styles.headerTitle, { marginLeft: theme.spacing.sm, marginTop: 7 }]}>Products</Text>
+        </View>
         <Text style={styles.headerSubtitle}>
           {totalProducts} products • {totalScans} scans
         </Text>
