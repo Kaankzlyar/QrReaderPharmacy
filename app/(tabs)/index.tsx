@@ -254,28 +254,56 @@ export default function ScannerScreen() {
         />
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           <View style={{ position: "absolute", left: vfL, top: vfT, width: vfW, height: vfH, borderRadius: 16, borderWidth: 3, borderColor: theme.colors.accent }} />
-          {barcodeBoxes.map((b) => {
-            const isGreen = b.color === theme.colors.accent;
-            const boxSize = Math.sqrt(b.frame.width * b.frame.height);
-            const borderWidth = Math.max(2, Math.min(4, boxSize / 30));
-            
-            return (
-              <View 
-                key={b.id} 
-                style={{ 
-                  position: "absolute", 
-                  left: b.frame.x, 
-                  top: b.frame.y, 
-                  width: b.frame.width, 
-                  height: b.frame.height, 
-                  borderWidth: borderWidth, 
-                  borderColor: isGreen ? "#00FF00" : "#FF0000", 
-                  borderRadius: 8, 
-                  backgroundColor: isGreen ? "rgba(0, 255, 0, 0.15)" : "rgba(255, 0, 0, 0.15)" 
-                }} 
-              />
-            );
-          })}
+          
+          {/* Checkmarks for successful scans */}
+          {barcodeBoxes.filter(b => b.color === theme.colors.accent).map((b, index) => (
+            <View 
+              key={b.id} 
+              style={{ 
+                position: "absolute", 
+                bottom: 20 + (index * 60),
+                right: 20,
+                backgroundColor: "#00FF00",
+                width: 50,
+                height: 50,
+                borderRadius: 25,
+                alignItems: "center",
+                justifyContent: "center",
+                shadowColor: "#000",
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.3,
+                shadowRadius: 4,
+                elevation: 5
+              }}
+            >
+              <MaterialIcons name="check" size={32} color="white" />
+            </View>
+          ))}
+          
+          {/* Red X for failed scans */}
+          {barcodeBoxes.filter(b => b.color === theme.colors.danger).map((b, index) => (
+            <View 
+              key={b.id} 
+              style={{ 
+                position: "absolute", 
+                bottom: 20 + (index * 60),
+                right: 20,
+                backgroundColor: "#FF0000",
+                width: 50,
+                height: 50,
+                borderRadius: 25,
+                alignItems: "center",
+                justifyContent: "center",
+                shadowColor: "#000",
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.3,
+                shadowRadius: 4,
+                elevation: 5
+              }}
+            >
+              <MaterialIcons name="close" size={32} color="white" />
+            </View>
+          ))}
           {Array.from(permanentMarkers.values()).map((marker) => (
             <View key={marker.id} style={{ position: "absolute", left: marker.frame.x, top: marker.frame.y, width: marker.frame.width, height: marker.frame.height, borderWidth: 3, borderColor: "#FFD700", borderRadius: 8, backgroundColor: "rgba(255, 215, 0, 0.15)", display: "none" }}>
               <View style={{ position: "absolute", top: -25, left: 0, backgroundColor: "rgba(255, 215, 0, 0.9)", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 }}>
@@ -291,19 +319,22 @@ export default function ScannerScreen() {
           {previewSize && (
             <Text style={styles.debugText}>Preview: {Math.round(previewSize.width)}x{Math.round(previewSize.height)}</Text>
           )}
-          <TouchableOpacity 
-            onPress={() => setTorchOn(!torchOn)} 
-            style={[styles.clearMarkersBtn, { backgroundColor: torchOn ? "#FFA500" : "#FFD700", marginBottom: 5 }]}
-          >
-            <Text style={styles.clearMarkersBtnText}>{torchOn ? "🔦 ON" : "🔦 OFF"}</Text>
-          </TouchableOpacity>
           <TouchableOpacity onPress={() => { setPermanentMarkers(new Map()); setScannedCodes(new Set()); setDetectionTracks([]); }} style={styles.clearMarkersBtn}>
             <Text style={styles.clearMarkersBtnText}>Clear Markers</Text>
           </TouchableOpacity>
         </View>
       </View>
       <View style={styles.bottomPanel}>
-        <Text style={styles.title}>Scanned Products</Text>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: theme.spacing.md }}>
+          <Text style={styles.title}>Scanned Products</Text>
+          <TouchableOpacity 
+            onPress={() => setTorchOn(!torchOn)} 
+            style={[styles.torchButton, { backgroundColor: torchOn ? "#FFA500" : theme.colors.accent }]}
+          >
+            <MaterialIcons name={torchOn ? "flash-on" : "flash-off"} size={20} color="white" />
+            <Text style={styles.torchButtonText}>{torchOn ? "ON" : "OFF"}</Text>
+          </TouchableOpacity>
+        </View>
         <ScrollView style={{ flex: 1 }}>
           {Object.values(products).map((p) => (
             <View key={p.id} style={styles.card}>
@@ -332,7 +363,9 @@ const styles = StyleSheet.create({
   clearMarkersBtn: { backgroundColor: "#FFD700", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, alignItems: "center" },
   clearMarkersBtnText: { color: "#000", fontSize: 11, fontWeight: "bold" },
   bottomPanel: { height: 280, backgroundColor: theme.colors.surface, padding: theme.spacing.lg, borderTopLeftRadius: theme.radius.lg * 1.5, borderTopRightRadius: theme.radius.lg * 1.5, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 8, elevation: 4 },
-  title: { fontFamily: theme.fonts.bold, fontSize: 17, color: theme.colors.text, marginBottom: theme.spacing.md },
+  title: { fontFamily: theme.fonts.bold, fontSize: 17, color: theme.colors.text, marginBottom: 0 },
+  torchButton: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, borderRadius: theme.radius.md, gap: 6 },
+  torchButtonText: { color: "white", fontFamily: theme.fonts.medium, fontSize: 14 },
   card: { backgroundColor: theme.colors.background, borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.sm },
   productName: { fontFamily: theme.fonts.medium, fontSize: 20, color: theme.colors.text },
   codeCount: { color: theme.colors.subtleText, fontSize: 12 },
