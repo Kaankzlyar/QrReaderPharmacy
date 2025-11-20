@@ -1,38 +1,42 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-interface Product {
-  id: string;
-  codes: string[];
+interface ScannedItem {
+  code: string;
+  productId: string;
+  timestamp: number;
 }
 
 interface ScanState {
-  products: Record<string, Product>;
+  scannedItems: ScannedItem[];
   addScan: (code: string, productId: string) => Promise<void>;
   loadData: () => Promise<void>;
   clearAll: () => Promise<void>;
 }
 
 export const useScanStore = create<ScanState>((set, get) => ({
-  products: {},
+  scannedItems: [],
 
   loadData: async () => {
-    const saved = await AsyncStorage.getItem('scanned_products');
-    if (saved) set({ products: JSON.parse(saved) });
+    const saved = await AsyncStorage.getItem('scanned_items');
+    if (saved) set({ scannedItems: JSON.parse(saved) });
   },
 
   addScan: async (code, productId) => {
-    const current = { ...get().products };
-    if (!current[productId]) current[productId] = { id: productId, codes: [] };
-    if (current[productId].codes.includes(code)) return;
-
-    current[productId].codes.push(code);
-    await AsyncStorage.setItem('scanned_products', JSON.stringify(current));
-    set({ products: current });
+    const current = [...get().scannedItems];
+    
+    current.push({
+      code,
+      productId,
+      timestamp: Date.now(),
+    });
+    
+    await AsyncStorage.setItem('scanned_items', JSON.stringify(current));
+    set({ scannedItems: current });
   },
 
   clearAll: async () => {
-    await AsyncStorage.removeItem('scanned_products');
-    set({ products: {} });
+    await AsyncStorage.removeItem('scanned_items');
+    set({ scannedItems: [] });
   },
 }));

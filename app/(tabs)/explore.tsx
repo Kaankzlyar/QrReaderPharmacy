@@ -6,14 +6,14 @@ import { theme } from '../../constants/theme';
 import { MaterialIcons } from '@expo/vector-icons';
 
 export default function ProductsScreen() {
-  const { products, loadData, clearAll } = useScanStore();
+  const { scannedItems, loadData, clearAll } = useScanStore();
 
   useEffect(() => {
     loadData();
   }, []);
 
-  const totalProducts = Object.keys(products).length;
-  const totalScans = Object.values(products).reduce((sum, p) => sum + p.codes.length, 0);
+  const totalProducts = new Set(scannedItems.map(item => item.productId)).size;
+  const totalScans = scannedItems.length;
 
   return (
     <View style={styles.container}>
@@ -30,31 +30,31 @@ export default function ProductsScreen() {
 
       {/* Product List */}
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        {Object.values(products).length === 0 ? (
+        {scannedItems.length === 0 ? (
           <View style={styles.emptyState}>
             <MaterialIcons name="inventory-2" size={64} color={theme.colors.subtleText} />
             <Text style={styles.emptyText}>No products scanned yet</Text>
             <Text style={styles.emptySubtext}>Scan QR codes to add products</Text>
           </View>
         ) : (
-          Object.values(products).map((product) => (
-            <View key={product.id} style={styles.productCard}>
+          scannedItems.map((item) => (
+            <View key={item.code} style={styles.productCard}>
               <View style={styles.productHeader}>
                 <MaterialIcons name="medication" size={24} color={theme.colors.accent} />
                 <View style={styles.productInfo}>
-                  <Text style={styles.productName}>{product.id}</Text>
-                  <Text style={styles.productCount}>{product.codes.length} items scanned</Text>
+                  <Text style={styles.productName}>{item.productId}</Text>
+                  <Text style={styles.productCount}>Code: {item.code}</Text>
                 </View>
               </View>
               
-              {/* Code List */}
+              {/* Timestamp */}
               <View style={styles.codeList}>
-                {product.codes.map((code, index) => (
-                  <View key={index} style={styles.codeItem}>
-                    <MaterialIcons name="qr-code-2" size={16} color={theme.colors.subtleText} />
-                    <Text style={styles.codeText}>{code}</Text>
-                  </View>
-                ))}
+                <View style={styles.codeItem}>
+                  <MaterialIcons name="schedule" size={16} color={theme.colors.subtleText} />
+                  <Text style={styles.codeText}>
+                    {new Date(item.timestamp).toLocaleString()}
+                  </Text>
+                </View>
               </View>
             </View>
           ))
@@ -62,7 +62,7 @@ export default function ProductsScreen() {
       </ScrollView>
 
       {/* Clear Button */}
-      {Object.values(products).length > 0 && (
+      {scannedItems.length > 0 && (
         <View style={styles.footer}>
           <TouchableOpacity style={styles.clearButton} onPress={clearAll}>
             <MaterialIcons name="delete-outline" size={20} color="white" />
