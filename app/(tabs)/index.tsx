@@ -197,9 +197,9 @@ export default function ScannerScreen() {
             const productId = data.split("-")[0];
             const existing = products[productId];
             
-            // Check if already scanned - add to markers but don't save again
+            // Check if already in database - add to markers but don't save again
             if (existing?.codes.includes(data)) {
-              console.log("⚠️ Already scanned:", data);
+              console.log("⚠️ Already in database:", data);
               setScannedCodes((prev) => new Set([...prev, data]));
               
               if (!permanentMarkers.has(data)) {
@@ -215,25 +215,27 @@ export default function ScannerScreen() {
               continue;
             }
             
+            // Mark as scanned IMMEDIATELY to prevent duplicate processing
             setScannedCodes((prev) => new Set([...prev, data]));
-            
-            // Add marker immediately when marked as scanned
-            if (!permanentMarkers.has(data)) {
-              setPermanentMarkers((prev) => new Map(prev).set(data, {
-                id: `permanent-${data}`,
-                data,
-                color: theme.colors.accent,
-                frame: frame,
-                timestamp: Date.now(),
-              }));
-            }
+            console.log("🔄 Processing new code:", data);
             
             (async () => {
               let scanSuccess = false;
               try {
                 await addScan(data, productId);
                 scanSuccess = true;
-                console.log("✅ Scan added successfully:", { data, productId });
+                console.log("✅ Scan saved to database:", { data, productId });
+                
+                // Add marker ONLY after successful save
+                if (!permanentMarkers.has(data)) {
+                  setPermanentMarkers((prev) => new Map(prev).set(data, {
+                    id: `permanent-${data}`,
+                    data,
+                    color: theme.colors.accent,
+                    frame: frame,
+                    timestamp: Date.now(),
+                  }));
+                }
               } catch (error) {
                 console.error("❌ Scan failed:", error);
               }
@@ -367,7 +369,8 @@ export default function ScannerScreen() {
         </View>
         <View style={styles.debugInfo}>
           <Text style={styles.debugText}>Saved: {Object.values(products).reduce((sum, p) => sum + p.codes.length, 0)} | Markers: {permanentMarkers.size}</Text>
-          <Text style={styles.debugText}>Products: {Object.keys(products).length} | Tracks: {detectionTracks.length}</Text>
+          <Text style={styles.debugText}>Scanned: {scannedCodes.size} | Tracks: {detectionTracks.length}</Text>
+          <Text style={styles.debugText}>Products: {Object.keys(products).length}</Text>
           <Text style={styles.debugText}>Screen: {Math.round(SCREEN_W)}x{Math.round(SCREEN_H)}</Text>
           <Text style={styles.debugText}>Format: {format?.videoWidth}x{format?.videoHeight}</Text>
           <TouchableOpacity onPress={() => { setPermanentMarkers(new Map()); setScannedCodes(new Set()); setDetectionTracks([]); }} style={styles.clearMarkersBtn}>

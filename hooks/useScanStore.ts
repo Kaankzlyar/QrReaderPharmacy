@@ -22,13 +22,39 @@ export const useScanStore = create<ScanState>((set, get) => ({
   },
 
   addScan: async (code, productId) => {
-    const current = { ...get().products };
-    if (!current[productId]) current[productId] = { id: productId, codes: [] };
-    if (current[productId].codes.includes(code)) return;
+    return new Promise<void>((resolve, reject) => {
+      set((state) => {
+        const current = { ...state.products };
+        
+        // Initialize product if doesn't exist
+        if (!current[productId]) {
+          current[productId] = { id: productId, codes: [] };
+        }
+        
+        // Check if already exists
+        if (current[productId].codes.includes(code)) {
+          console.log('⚠️ Duplicate prevented in addScan:', code);
+          reject(new Error('Code already exists'));
+          return state; // Return unchanged state
+        }
 
-    current[productId].codes.push(code);
-    await AsyncStorage.setItem('scanned_products', JSON.stringify(current));
-    set({ products: current });
+        // Add new code
+        current[productId].codes.push(code);
+        
+        // Save to AsyncStorage
+        AsyncStorage.setItem('scanned_products', JSON.stringify(current))
+          .then(() => {
+            console.log('💾 Saved to storage:', code);
+            resolve();
+          })
+          .catch((error) => {
+            console.error('❌ Storage failed:', error);
+            reject(error);
+          });
+        
+        return { products: current };
+      });
+    });
   },
 
   clearAll: async () => {
