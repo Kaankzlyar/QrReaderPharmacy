@@ -1,46 +1,33 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, Platform } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Dimensions,
+} from "react-native";
 import { Camera, useCameraDevice, useCodeScanner } from "react-native-vision-camera";
 import { useScanStore } from "../../hooks/useScanStore";
 import { theme } from "../../constants/theme";
 import { MaterialIcons } from "@expo/vector-icons";
+import {
+  calculateIoU,
+  pointInRect,
+  isValidQRDetection,
+  findMatchingTrack,
+  updateTrack,
+  createTrack,
+  cleanupExpiredTracks,
+  assignRegionsToBoxes,
+  isQRConfirmed,
+  type BarcodeBox,
+  type DetectionTrack,
+  type ViewfinderRect,
+  type DetectionConfig,
+} from "../../utils/qrDetectionUtils";
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
-
-interface BarcodeBox {
-  id: string;
-  data: string;
-  color: string;
-  frame: { x: number; y: number; width: number; height: number };
-  timestamp: number;
-}
-
-interface DetectionTrack {
-  code: string;
-  frame: { x: number; y: number; width: number; height: number };
-  hitCount: number;
-  lastSeen: number;
-}
-
-// Calculate Intersection over Union for two rectangles
-const calculateIoU = (
-  rect1: { x: number; y: number; width: number; height: number },
-  rect2: { x: number; y: number; width: number; height: number }
-): number => {
-  const x1 = Math.max(rect1.x, rect2.x);
-  const y1 = Math.max(rect1.y, rect2.y);
-  const x2 = Math.min(rect1.x + rect1.width, rect2.x + rect2.width);
-  const y2 = Math.min(rect1.y + rect1.height, rect2.y + rect2.height);
-
-  if (x2 < x1 || y2 < y1) return 0;
-
-  const intersection = (x2 - x1) * (y2 - y1);
-  const area1 = rect1.width * rect1.height;
-  const area2 = rect2.width * rect2.height;
-  const union = area1 + area2 - intersection;
-
-  return intersection / union;
-};
 
 export default function ScannerScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -63,12 +50,10 @@ export default function ScannerScreen() {
   const { products, addScan, loadData, clearAll } = useScanStore();
   const device = useCameraDevice("back");
 
-  const format = device?.formats.find(
-    (f) => 
-      f.videoWidth === 1280 && 
-      f.videoHeight === 720 && 
-      f.maxFps >= 30
-  ) || device?.formats[0];
+  const format =
+    device?.formats.find(
+      (f) => f.videoWidth === 1280 && f.videoHeight === 720 && f.maxFps >= 30
+    ) || device?.formats[0];
 
   useEffect(() => {
     (async () => {
@@ -140,9 +125,7 @@ export default function ScannerScreen() {
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
-      setDetectionTracks((prev) => 
-        prev.filter((track) => now - track.lastSeen < TRACK_TIMEOUT)
-      );
+      setDetectionTracks((prev) => cleanupExpiredTracks(prev, now, detectionConfig.trackTimeout));
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -184,12 +167,8 @@ export default function ScannerScreen() {
               break;
             }
           }
-        }
 
-        if (matchedTrack) {
-          matchedTrack.hitCount++;
-          matchedTrack.frame = { ...frame };
-          matchedTrack.lastSeen = now;
+          if (scannedCodes.has(data)) continue;
 
           if (matchedTrack.hitCount >= CONFIRMATION_THRESHOLD && !scannedCodes.has(data)) {
             console.log("[QR CONFIRMED]", { data, frame, hitCount: matchedTrack.hitCount });
@@ -263,16 +242,7 @@ export default function ScannerScreen() {
               }, scanSuccess ? 1800 : 500);
             })();
           }
-        } else {
-          newTracks.push({
-            code: data,
-            frame: frame,
-            hitCount: 1,
-            lastSeen: now,
-          });
-          console.log("[QR DETECTED]", { data, frame, hitCount: 1 });
         }
-      }
 
       setDetectionTracks(newTracks);
       
@@ -298,12 +268,14 @@ export default function ScannerScreen() {
   if (hasPermission === false) return <Text>No access to camera</Text>;
   if (!device) return <Text>No camera device found</Text>;
 
+  const totalRegions = Math.ceil(permanentMarkers.size / 4);
+
   return (
     <View style={styles.container}>
       <View style={styles.scannerArea}>
-        <Camera 
-          style={StyleSheet.absoluteFill} 
-          device={device} 
+        <Camera
+          style={StyleSheet.absoluteFill}
+          device={device}
           isActive={true}
           videoHdr={true}
           codeScanner={codeScanner}
@@ -376,26 +348,44 @@ export default function ScannerScreen() {
         </View>
       </View>
       <View style={styles.bottomPanel}>
-        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: theme.spacing.md }}>
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: theme.spacing.md,
+          }}
+        >
           <Text style={styles.title}>Scanned Products</Text>
-          <TouchableOpacity 
-            onPress={() => setTorchOn(!torchOn)} 
-            style={[styles.torchButton, { backgroundColor: torchOn ? "#FFA500" : theme.colors.accent }]}
+          <TouchableOpacity
+            onPress={() => setTorchOn(!torchOn)}
+            style={[
+              styles.torchButton,
+              { backgroundColor: torchOn ? "#FFA500" : theme.colors.accent },
+            ]}
           >
             <MaterialIcons name={torchOn ? "flash-on" : "flash-off"} size={20} color="white" />
             <Text style={styles.torchButtonText}>{torchOn ? "ON" : "OFF"}</Text>
           </TouchableOpacity>
         </View>
         <ScrollView style={{ flex: 1 }}>
-          {Object.values(products).map((p) => (
-            <View key={p.id} style={styles.card}>
-              <View>
-                <Text style={styles.productName}>{p.id}</Text>
-                <Text style={styles.codeCount}>{p.codes.length} pcs</Text>
+          {scannedItems.length > 0 ? (
+            scannedItems.map((item) => (
+              <View key={item.code} style={styles.card}>
+                <View>
+                  <Text style={styles.productName}>{item.productId}</Text>
+                  <Text style={styles.codeCount}>Code: {item.code}</Text>
+                  <Text style={{ color: theme.colors.subtleText, fontSize: 10, marginTop: 4 }}>
+                    Scanned: {new Date(item.timestamp).toLocaleTimeString()}
+                  </Text>
+                </View>
               </View>
-            </View>
-          ))}
-          {Object.keys(products).length === 0 && <Text style={{ color: theme.colors.subtleText }}>No products scanned yet.</Text>}
+            ))
+          ) : (
+            <Text style={{ color: theme.colors.subtleText, marginTop: 20 }}>
+              No items scanned yet. Scan QR codes to add items.
+            </Text>
+          )}
         </ScrollView>
         <TouchableOpacity style={styles.clearButton} onPress={clearAll}>
           <MaterialIcons name="delete-outline" size={20} color="white" />
@@ -409,17 +399,67 @@ export default function ScannerScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.background },
   scannerArea: { flex: 1, backgroundColor: "black" },
-  debugInfo: { position: "absolute", top: 10, right: 10, backgroundColor: "rgba(0,0,0,0.7)", padding: 8, borderRadius: 8, zIndex: 1000 },
+  debugInfo: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    padding: 8,
+    borderRadius: 8,
+    zIndex: 1000,
+  },
   debugText: { color: "white", fontSize: 12, marginBottom: 5 },
-  clearMarkersBtn: { backgroundColor: "#FFD700", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, alignItems: "center" },
+  clearMarkersBtn: {
+    backgroundColor: "#FFD700",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 4,
+    alignItems: "center",
+  },
   clearMarkersBtnText: { color: "#000", fontSize: 11, fontWeight: "bold" },
-  bottomPanel: { height: 280, backgroundColor: theme.colors.surface, padding: theme.spacing.lg, borderTopLeftRadius: theme.radius.lg * 1.5, borderTopRightRadius: theme.radius.lg * 1.5, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 8, elevation: 4 },
-  title: { fontFamily: theme.fonts.bold, fontSize: 17, color: theme.colors.text, marginBottom: 0 },
-  torchButton: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, borderRadius: theme.radius.md, gap: 6 },
+  bottomPanel: {
+    height: 280,
+    backgroundColor: theme.colors.surface,
+    padding: theme.spacing.lg,
+    borderTopLeftRadius: theme.radius.lg * 1.5,
+    borderTopRightRadius: theme.radius.lg * 1.5,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  title: {
+    fontFamily: theme.fonts.bold,
+    fontSize: 17,
+    color: theme.colors.text,
+    marginBottom: 0,
+  },
+  torchButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: theme.radius.md,
+    gap: 6,
+  },
   torchButtonText: { color: "white", fontFamily: theme.fonts.medium, fontSize: 14 },
-  card: { backgroundColor: theme.colors.background, borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.sm },
+  card: {
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.lg,
+    marginBottom: theme.spacing.sm,
+  },
   productName: { fontFamily: theme.fonts.medium, fontSize: 20, color: theme.colors.text },
   codeCount: { color: theme.colors.subtleText, fontSize: 12 },
-  clearButton: { marginTop: theme.spacing.lg, backgroundColor: theme.colors.danger, flexDirection: "row", alignItems: "center", justifyContent: "center", borderRadius: theme.radius.md, paddingVertical: 10, gap: 8 },
+  clearButton: {
+    marginTop: theme.spacing.lg,
+    backgroundColor: theme.colors.danger,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.radius.md,
+    paddingVertical: 10,
+    gap: 8,
+  },
   clearButtonText: { color: "white", fontFamily: theme.fonts.medium },
 });
