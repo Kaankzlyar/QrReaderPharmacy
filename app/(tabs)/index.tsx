@@ -11,66 +11,23 @@ import { Camera, useCameraDevice, useCodeScanner } from "react-native-vision-cam
 import { useScanStore } from "../../hooks/useScanStore";
 import { theme } from "../../constants/theme";
 import { MaterialIcons } from "@expo/vector-icons";
+import {
+  calculateIoU,
+  pointInRect,
+  isValidQRDetection,
+  findMatchingTrack,
+  updateTrack,
+  createTrack,
+  cleanupExpiredTracks,
+  assignRegionsToBoxes,
+  isQRConfirmed,
+  type BarcodeBox,
+  type DetectionTrack,
+  type ViewfinderRect,
+  type DetectionConfig,
+} from "../../utils/qrDetectionUtils";
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
-
-interface BarcodeBox {
-  id: string;
-  data: string;
-  color: string;
-  frame: { x: number; y: number; width: number; height: number };
-  timestamp: number;
-  regionIndex?: number;
-  indexInRegion?: number; 
-}
-
-interface DetectionTrack {
-  code: string;
-  frame: { x: number; y: number; width: number; height: number };
-  hitCount: number;
-  lastSeen: number;
-}
-
-
-const assignRegionsToBoxes = (boxes: BarcodeBox[]): BarcodeBox[] => {
-  const sorted = [...boxes].sort((a, b) => {
-    const aCenterY = a.frame.y + a.frame.height / 2;
-    const bCenterY = b.frame.y + b.frame.height / 2;
-
-    if (Math.abs(aCenterY - bCenterY) > 5) {
-      return aCenterY - bCenterY;
-    }
-
-    const aCenterX = a.frame.x + a.frame.width / 2;
-    const bCenterX = b.frame.x + b.frame.width / 2;
-    return aCenterX - bCenterX;
-  });
-
-  return sorted.map((box, idx) => ({
-    ...box,
-    regionIndex: Math.floor(idx / 4), // her 4 QR bir bölge
-    indexInRegion: idx % 4,
-  }));
-};
-
-const calculateIoU = (
-  rect1: { x: number; y: number; width: number; height: number },
-  rect2: { x: number; y: number; width: number; height: number }
-): number => {
-  const x1 = Math.max(rect1.x, rect2.x);
-  const y1 = Math.max(rect1.y, rect2.y);
-  const x2 = Math.min(rect1.x + rect1.width, rect2.x + rect2.width);
-  const y2 = Math.min(rect1.y + rect1.height, rect2.y + rect2.height);
-
-  if (x2 < x1 || y2 < y1) return 0;
-
-  const intersection = (x2 - x1) * (y2 - y1);
-  const area1 = rect1.width * rect1.height;
-  const area2 = rect2.width * rect2.height;
-  const union = area1 + area2 - intersection;
-
-  return intersection / union;
-};
 
 export default function ScannerScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -83,12 +40,15 @@ export default function ScannerScreen() {
 
   const VF_WIDTH_RATIO = 0.8;
   const VF_HEIGHT_RATIO = 0.4;
-  const CONFIRMATION_THRESHOLD = 1;
-  const IOU_THRESHOLD = 0.03;
-  const MIN_BOX_AREA_RATIO = 0.0001;
-  const MIN_ASPECT_RATIO = 0.05;
-  const MAX_ASPECT_RATIO = 2;
-  const TRACK_TIMEOUT = 3000;
+
+  const detectionConfig: DetectionConfig = {
+    confirmationThreshold: 1,
+    iouThreshold: 0.03,
+    minBoxAreaRatio: 0.0001,
+    minAspectRatio: 0.05,
+    maxAspectRatio: 2,
+    trackTimeout: 3000,
+  };
 
   const { scannedItems, addScan, loadData, clearAll } = useScanStore();
   const device = useCameraDevice("back");
@@ -140,19 +100,13 @@ export default function ScannerScreen() {
   const vfL = (SCREEN_W - vfW) / 2;
   const vfT = (SCREEN_H - vfH) / 2 - 150;
 
-  const viewfinderRect = { left: vfL, top: vfT, width: vfW, height: vfH };
+  const viewfinderRect: ViewfinderRect = { left: vfL, top: vfT, width: vfW, height: vfH };
   console.log("[VIEWFINDER RECTANGLE]", viewfinderRect);
-
-  const pointInRect = (
-    x: number,
-    y: number,
-    rect: { left: number; top: number; width: number; height: number }
-  ) => x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height;
 
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
-      setDetectionTracks((prev) => prev.filter((track) => now - track.lastSeen < TRACK_TIMEOUT));
+      setDetectionTracks((prev) => cleanupExpiredTracks(prev, now, detectionConfig.trackTimeout));
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -173,41 +127,24 @@ export default function ScannerScreen() {
 
           const frame = code.frame;
 
-          const centerX = frame.x + frame.width / 2;
-          const centerY = frame.y + frame.height / 2;
-          const inViewfinder = pointInRect(centerX, centerY, viewfinderRect);
-          if (!inViewfinder) continue;
-
-          const boxArea = frame.width * frame.height;
-          if (boxArea / screenArea < MIN_BOX_AREA_RATIO) continue;
-
-          const aspectRatio = frame.width / frame.height;
-          if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
+          // Use utility function to validate QR detection
+          if (!isValidQRDetection(frame, viewfinderRect, SCREEN_W, SCREEN_H, detectionConfig)) {
+            continue;
+          }
 
           if (scannedCodes.has(data)) continue;
 
-          let matchedTrack: DetectionTrack | undefined;
-          let matchedIndex = -1;
+          // Find matching track using utility function
+          const matchResult = findMatchingTrack(data, frame, newTracks, detectionConfig.iouThreshold);
 
-          for (let i = 0; i < newTracks.length; i++) {
-            const track = newTracks[i];
-            if (track.code === data) {
-              const iou = calculateIoU(track.frame, frame);
-              if (iou >= IOU_THRESHOLD) {
-                matchedTrack = track;
-                matchedIndex = i;
-                break;
-              }
-            }
-          }
+          if (matchResult) {
+            const { track: matchedTrack, index: matchedIndex } = matchResult;
+            
+            // Update track using utility function
+            newTracks[matchedIndex] = updateTrack(matchedTrack, frame, now);
 
-          if (matchedTrack) {
-            matchedTrack.hitCount++;
-            matchedTrack.frame = { ...frame };
-            matchedTrack.lastSeen = now;
-
-            if (matchedTrack.hitCount >= CONFIRMATION_THRESHOLD && !scannedCodes.has(data)) {
-              console.log("[QR CONFIRMED]", { data, frame, hitCount: matchedTrack.hitCount });
+            if (isQRConfirmed(newTracks[matchedIndex], detectionConfig.confirmationThreshold) && !scannedCodes.has(data)) {
+              console.log("[QR CONFIRMED]", { data, frame, hitCount: newTracks[matchedIndex].hitCount });
 
               const productId = data.split("-")[0];
 
@@ -267,12 +204,8 @@ export default function ScannerScreen() {
               })();
             }
           } else {
-            newTracks.push({
-              code: data,
-              frame: frame,
-              hitCount: 1,
-              lastSeen: now,
-            });
+            // Create new track using utility function
+            newTracks.push(createTrack(data, frame, now));
             console.log("[QR DETECTED]", { data, frame, hitCount: 1 });
           }
         }
