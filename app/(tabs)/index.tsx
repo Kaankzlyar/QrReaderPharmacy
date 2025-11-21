@@ -36,21 +36,18 @@ export default function ScannerScreen() {
   const [permanentMarkers, setPermanentMarkers] = useState<Map<string, BarcodeBox>>(new Map());
   const [detectionTracks, setDetectionTracks] = useState<DetectionTrack[]>([]);
   const [torchOn, setTorchOn] = useState(false);
-  const [previewSize, setPreviewSize] = useState<{ width: number; height: number } | null>(null);
+  const [frameDimensions, setFrameDimensions] = useState({ width: 1280, height: 720 });
 
-  const VF_WIDTH_RATIO = 0.8;
-  const VF_HEIGHT_RATIO = 0.4;
-
-  const detectionConfig: DetectionConfig = {
-    confirmationThreshold: 1,
-    iouThreshold: 0.03,
-    minBoxAreaRatio: 0.0001,
-    minAspectRatio: 0.05,
-    maxAspectRatio: 2,
-    trackTimeout: 3000,
-  };
-
-  const { scannedItems, addScan, loadData, clearAll } = useScanStore();
+  const VF_WIDTH_RATIO = 0.80;
+  const VF_HEIGHT_RATIO = 0.45; // Reduced from 0.55 to move scanning area higher
+  const CONFIRMATION_THRESHOLD = 1; // Reduced to 1 for instant confirmation
+  const IOU_THRESHOLD = 0.3; // Reduced from 0.4 for more lenient tracking
+  const MIN_BOX_AREA_RATIO = 0.001; // Reduced from 0.02 to accept smaller QR codes
+  const MIN_ASPECT_RATIO = 0.5; // More lenient (was 0.7)
+  const MAX_ASPECT_RATIO = 2; // More lenient (was 1.4)
+  const TRACK_TIMEOUT = 1500; 
+  
+  const { products, addScan, loadData, clearAll } = useScanStore();
   const device = useCameraDevice("back");
 
   const format =
@@ -68,30 +65,7 @@ export default function ScannerScreen() {
 
   useEffect(() => {
     if (format) {
-      const cameraAspectRatio = format.videoWidth / format.videoHeight;
-      const screenAspectRatio = SCREEN_W / SCREEN_H;
-
-      let previewWidth = SCREEN_W;
-      let previewHeight = SCREEN_H;
-
-      if (cameraAspectRatio > screenAspectRatio) {
-        // Camera is wider - fit to height
-        previewHeight = SCREEN_H;
-        previewWidth = SCREEN_H * cameraAspectRatio;
-      } else {
-        // Camera is taller - fit to width
-        previewWidth = SCREEN_W;
-        previewHeight = SCREEN_W / cameraAspectRatio;
-      }
-
-      setPreviewSize({ width: previewWidth, height: previewHeight });
-      console.log("[PREVIEW SIZE]", {
-        screen: { w: SCREEN_W, h: SCREEN_H },
-        camera: { w: format.videoWidth, h: format.videoHeight },
-        preview: { w: previewWidth, h: previewHeight },
-        cameraAR: cameraAspectRatio.toFixed(2),
-        screenAR: screenAspectRatio.toFixed(2),
-      });
+      setFrameDimensions({ width: format.videoWidth, height: format.videoHeight });
     }
   }, [format]);
 
@@ -100,8 +74,53 @@ export default function ScannerScreen() {
   const vfL = (SCREEN_W - vfW) / 2;
   const vfT = (SCREEN_H - vfH) / 2 - 150;
 
-  const viewfinderRect: ViewfinderRect = { left: vfL, top: vfT, width: vfW, height: vfH };
-  console.log("[VIEWFINDER RECTANGLE]", viewfinderRect);
+  const viewfinderRect = { left: vfL, top: vfT, width: vfW, height: vfH };
+
+
+
+  // --- COORDINATE SCALING FOR 'CONTAIN' MODE ---
+  const adjustRect = (rect: { x: number; y: number; width: number; height: number }) => {
+    const { width: frameW, height: frameH } = frameDimensions;
+    
+    // Detect if we need to swap dimensions (Android Portrait)
+    const isPortraitUI = SCREEN_H > SCREEN_W;
+    const isFrameLandscape = frameW > frameH;
+    const shouldSwap = Platform.OS === 'android' && isPortraitUI && isFrameLandscape;
+
+    // 1. Determine the "Visual" dimensions of the video as seen on screen
+    const visualW = shouldSwap ? frameH : frameW;
+    const visualH = shouldSwap ? frameW : frameH;
+
+    // 2. Calculate Scale & Offsets (Black bars)
+    const scale = Math.min(SCREEN_W / visualW, SCREEN_H / visualH);
+    
+    const displayedWidth = visualW * scale;
+    const displayedHeight = visualH * scale;
+    
+    const offsetX = (SCREEN_W - displayedWidth) / 2;
+    const offsetY = (SCREEN_H - displayedHeight) / 2;
+
+    // 3. Map Coordinates
+    if (shouldSwap) {
+        // ✅ ANDROID FIX: Swap X/Y and Width/Height
+        // The camera's "X" is the screen's "Top" (Y)
+        // The camera's "Y" is the screen's "Left" (X)
+        return {
+            left: (rect.y * scale) + offsetX,
+            top: (rect.x * scale) + offsetY,
+            width: rect.height * scale,
+            height: rect.width * scale,
+        };
+    }
+
+    // ✅ STANDARD (iOS or Android Landscape)
+    return {
+      left: (rect.x * scale) + offsetX,
+      top: (rect.y * scale) + offsetY,
+      width: rect.width * scale,
+      height: rect.height * scale,
+    };
+  };
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -113,107 +132,136 @@ export default function ScannerScreen() {
 
   const codeScanner = useCodeScanner({
     codeTypes: ["qr"],
-    onCodeScanned: useCallback(
-      (codes) => {
-        if (codes.length === 0) return;
+    onCodeScanned: useCallback((codes) => {
+      if (codes.length === 0) return;
+      
+      const now = Date.now();
+      const screenArea = SCREEN_W * SCREEN_H;
+      const newTracks: DetectionTrack[] = [...detectionTracks];
 
-        const now = Date.now();
-        const screenArea = SCREEN_W * SCREEN_H;
-        const newTracks: DetectionTrack[] = [...detectionTracks];
+      for (const code of codes) {
+        const data = code.value;
+        if (!data || !code.frame) continue;
 
-        for (const code of codes) {
-          const data = code.value;
-          if (!data || !code.frame) continue;
+        const frame = code.frame;
+        
+        // Basic validation only
+        const boxArea = frame.width * frame.height;
+        if (boxArea / screenArea < MIN_BOX_AREA_RATIO) continue;
 
-          const frame = code.frame;
+        const aspectRatio = frame.width / frame.height;
+        if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
 
-          // Use utility function to validate QR detection
-          if (!isValidQRDetection(frame, viewfinderRect, SCREEN_W, SCREEN_H, detectionConfig)) {
-            continue;
+        if (scannedCodes.has(data)) continue;
+
+        let matchedTrack: DetectionTrack | undefined;
+        let matchedIndex = -1;
+        
+        for (let i = 0; i < newTracks.length; i++) {
+          const track = newTracks[i];
+          if (track.code === data) {
+            const iou = calculateIoU(track.frame, frame);
+            if (iou >= IOU_THRESHOLD) {
+              matchedTrack = track;
+              matchedIndex = i;
+              break;
+            }
           }
 
           if (scannedCodes.has(data)) continue;
 
-          // Find matching track using utility function
-          const matchResult = findMatchingTrack(data, frame, newTracks, detectionConfig.iouThreshold);
-
-          if (matchResult) {
-            const { track: matchedTrack, index: matchedIndex } = matchResult;
+          if (matchedTrack.hitCount >= CONFIRMATION_THRESHOLD && !scannedCodes.has(data)) {
+            console.log("[QR CONFIRMED]", { data, frame, hitCount: matchedTrack.hitCount });
             
-            // Update track using utility function
-            newTracks[matchedIndex] = updateTrack(matchedTrack, frame, now);
-
-            if (isQRConfirmed(newTracks[matchedIndex], detectionConfig.confirmationThreshold) && !scannedCodes.has(data)) {
-              console.log("[QR CONFIRMED]", { data, frame, hitCount: newTracks[matchedIndex].hitCount });
-
-              const productId = data.split("-")[0];
-
+            const productId = data.split("-")[0];
+            const existing = products[productId];
+            
+            // Check if already scanned - add to markers but don't save again
+            if (existing?.codes.includes(data)) {
+              console.log("⚠️ Already scanned:", data);
               setScannedCodes((prev) => new Set([...prev, data]));
-
-              (async () => {
-                let scanSuccess = false;
-                try {
-                  await addScan(data, productId);
-                  scanSuccess = true;
-                  console.log("✅ Scan added successfully:", {
-                    data,
-                    productId,
-                  });
-                } catch (error) {
-                  console.error("❌ Scan failed:", error);
-                }
-
-                const id = `${data}-${Date.now()}`;
+              
+              if (!permanentMarkers.has(data)) {
                 const newBox: BarcodeBox = {
-                  id,
+                  id: `permanent-${data}`,
                   data,
-                  color: scanSuccess ? theme.colors.accent : theme.colors.danger,
+                  color: theme.colors.accent,
                   frame: frame,
                   timestamp: Date.now(),
                 };
-
-                setBarcodeBoxes((prev) => [...prev, newBox].slice());
-
-                setTimeout(() => {
-                  setBarcodeBoxes((prev) => prev.filter((x) => x.id !== id));
-                  if (!scanSuccess) {
-                    setScannedCodes((prev) => {
-                      const newSet = new Set(prev);
-                      newSet.delete(data);
-                      return newSet;
-                    });
-                  }
-                }, scanSuccess ? 1800 : 500);
-
-                // ✅ Kalıcı marker: QR üzerinde yeşil tik + 4'er 4'er bölge mantığı
-                if (scanSuccess) {
+                setPermanentMarkers((prev) => new Map(prev).set(data, newBox));
+              }
+              continue;
+            }
+            
+            setScannedCodes((prev) => new Set([...prev, data]));
+            
+            // Add marker immediately when marked as scanned
+            if (!permanentMarkers.has(data)) {
+              setPermanentMarkers((prev) => new Map(prev).set(data, {
+                id: `permanent-${data}`,
+                data,
+                color: theme.colors.accent,
+                frame: frame,
+                timestamp: Date.now(),
+              }));
+            }
+            
+            (async () => {
+              let scanSuccess = false;
+              try {
+                await addScan(data, productId);
+                scanSuccess = true;
+                console.log("✅ Scan added successfully:", { data, productId });
+              } catch (error) {
+                console.error("❌ Scan failed:", error);
+              }
+              
+              const id = `${data}-${Date.now()}`;
+              const newBox: BarcodeBox = {
+                id,
+                data,
+                color: scanSuccess ? theme.colors.accent : theme.colors.danger,
+                frame: frame,
+                timestamp: Date.now(),
+              };
+              
+              setBarcodeBoxes((prev) => [...prev, newBox].slice(-8)); // Increased to show 8 boxes
+              
+              setTimeout(() => {
+                setBarcodeBoxes((prev) => prev.filter((x) => x.id !== id));
+                if (!scanSuccess) {
+                  setScannedCodes((prev) => { const newSet = new Set(prev); newSet.delete(data); return newSet; });
+                  // Remove marker if save failed
                   setPermanentMarkers((prev) => {
-                    const updated = new Map(prev);
-                    if (!updated.has(data)) {
-                      updated.set(data, { ...newBox, id: `permanent-${data}` });
-                    }
-
-                    const withRegions = assignRegionsToBoxes(Array.from(updated.values()));
-                    const remapped = new Map<string, BarcodeBox>();
-                    for (const box of withRegions) {
-                      remapped.set(box.data, box);
-                    }
-                    return remapped;
+                    const newMap = new Map(prev);
+                    newMap.delete(data);
+                    return newMap;
                   });
                 }
-              })();
-            }
-          } else {
-            // Create new track using utility function
-            newTracks.push(createTrack(data, frame, now));
-            console.log("[QR DETECTED]", { data, frame, hitCount: 1 });
+              }, scanSuccess ? 1800 : 500);
+            })();
           }
         }
 
-        setDetectionTracks(newTracks);
-      },
-      [scannedCodes, scannedItems, viewfinderRect, addScan, detectionTracks]
-    ),
+      setDetectionTracks(newTracks);
+      
+      setPermanentMarkers((prevMarkers) => {
+        const updatedMarkers = new Map(prevMarkers);
+        for (const track of newTracks) {
+          if (scannedCodes.has(track.code)) {
+            updatedMarkers.set(track.code, {
+              id: `permanent-${track.code}`,
+              data: track.code,
+              color: theme.colors.accent,
+              frame: track.frame,
+              timestamp: now,
+            });
+          }
+        }
+        return updatedMarkers;
+      });
+    }, [scannedCodes, products, permanentMarkers, addScan, detectionTracks]),
   });
 
   if (hasPermission === null) return <Text>Requesting camera permission…</Text>;
@@ -234,116 +282,67 @@ export default function ScannerScreen() {
           format={format}
           fps={30}
           videoStabilizationMode="auto"
+          resizeMode="contain"
           torch={torchOn ? "on" : "off"}
         />
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-          {/* Ana çerçeve */}
-          {/* <View
-            style={{
-              position: "absolute",
-              left: vfL,
-              top: vfT,
-              width: vfW,
-              height: vfH,
-              borderRadius: 16,
-              borderWidth: 3,
-              borderColor: theme.colors.accent,
-            }}
-          /> */}
-
+          <View style={{ position: "absolute", left: vfL, top: vfT, width: vfW, height: vfH, borderRadius: 16, borderWidth: 3, borderColor: theme.colors.accent }} />
+          
+          {/* --- YEŞIL DİKDÖRTGEN VE CHECKMARK KATMANI --- */}
           {Array.from(permanentMarkers.values()).map((marker) => {
-            const { x, y, width, height } = marker.frame;
-            const size = 26; // tik ikonu boyutu
+            // Kutunun ekrandaki yerini hesapla
+            const styleRect = adjustRect(marker.frame);
+            
+            // İkon boyutunu kutunun boyutuna göre dinamik ayarla (Çok küçük veya çok büyük olmasın)
+            const badgeSize = Math.min(styleRect.width * 0.5, 40); 
+            const badgeRadius = badgeSize / 2;
+            const iconSize = badgeSize * 0.7;
+
             return (
               <View
-                key={marker.id}
+                key={marker.data}
                 style={{
                   position: "absolute",
-                  left: x,
-                  top: y,
-                  width,
-                  height,
+                  left: styleRect.left,
+                  top: styleRect.top,
+                  width: styleRect.width,
+                  height: styleRect.height,
+                  // DIŞ ÇERÇEVE (Yeşil Dikdörtgen)
+                  borderWidth: 2,
+                  borderColor: "#00FF00", 
+                  backgroundColor: "rgba(0, 255, 0, 0.1)", // Hafif saydam yeşil dolgu
+                  borderRadius: 4,
+                  // İçindeki ikonu tam ortaya hizala
+                  justifyContent: 'center',
+                  alignItems: 'center'
                 }}
               >
-                {/* yeşil border (QR çevresi) */}
-                <View
-                  style={{
-                    position: "absolute",
-                    left: 0,
-                    top: 0,
-                    width: "100%",
-                    height: "100%",
-                    borderWidth: 2,
-                    borderColor: "#00FF00",
-                    borderRadius: 8,
-                    backgroundColor: "rgba(0, 255, 0, 0.1)",
-                  }}
-                />
-
-                {/* yeşil tik – QR'ın ortasında */}
-                <MaterialIcons
-                  name="check-circle"
-                  size={size}
-                  color="#00FF00"
-                  style={{
-                    position: "absolute",
-                    left: width / 2 - size / 2,
-                    top: height / 2 - size / 2,
-                  }}
-                />
-
-                {/* İstersen bölge etiketi de gösterebilirsin */}
-                {typeof marker.regionIndex === "number" && (
-                  <View
-                    style={{
-                      position: "absolute",
-                      top: -22,
-                      left: 0,
-                      backgroundColor: "rgba(0,0,0,0.7)",
-                      paddingHorizontal: 6,
-                      paddingVertical: 3,
-                      borderRadius: 4,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        color: "#fff",
-                        fontSize: 10,
-                        fontWeight: "bold",
-                      }}
-                    >
-                      Bölge {marker.regionIndex! + 1} • #{(marker.indexInRegion ?? 0) + 1}
-                    </Text>
-                  </View>
-                )}
+                {/* ORTA İKON (Yeşil Daire + Siyah Tik) */}
+                <View style={{
+                    backgroundColor: '#00FF00', 
+                    width: badgeSize,
+                    height: badgeSize,
+                    borderRadius: badgeRadius,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    // Gölge efektleri
+                    shadowColor: "#000",
+                    shadowOpacity: 0.3,
+                    shadowRadius: 2,
+                    elevation: 3
+                }}>
+                  <MaterialIcons name="check" size={iconSize} color="black" style={{fontWeight: 'bold'}} />
+                </View>
               </View>
             );
           })}
         </View>
         <View style={styles.debugInfo}>
-          <Text style={styles.debugText}>
-            Boxes: {barcodeBoxes.length} | Markers: {permanentMarkers.size}
-          </Text>
-          <Text style={styles.debugText}>
-            Scanned Items: {scannedItems.length} | Tracks: {detectionTracks.length}
-          </Text>
-          <Text style={styles.debugText}>
-            Screen: {Math.round(SCREEN_W)}x{Math.round(SCREEN_H)}
-          </Text>
-          {previewSize && (
-            <Text style={styles.debugText}>
-              Preview: {Math.round(previewSize.width)}x{Math.round(previewSize.height)}
-            </Text>
-          )}
-          <Text style={styles.debugText}>Regions (4&apos;lü): {totalRegions}</Text>
-          <TouchableOpacity
-            onPress={() => {
-              setPermanentMarkers(new Map());
-              setScannedCodes(new Set());
-              setDetectionTracks([]);
-            }}
-            style={styles.clearMarkersBtn}
-          >
+          <Text style={styles.debugText}>Saved: {Object.values(products).reduce((sum, p) => sum + p.codes.length, 0)} | Markers: {permanentMarkers.size}</Text>
+          <Text style={styles.debugText}>Products: {Object.keys(products).length} | Tracks: {detectionTracks.length}</Text>
+          <Text style={styles.debugText}>Screen: {Math.round(SCREEN_W)}x{Math.round(SCREEN_H)}</Text>
+          <Text style={styles.debugText}>Format: {format?.videoWidth}x{format?.videoHeight}</Text>
+          <TouchableOpacity onPress={() => { setPermanentMarkers(new Map()); setScannedCodes(new Set()); setDetectionTracks([]); }} style={styles.clearMarkersBtn}>
             <Text style={styles.clearMarkersBtnText}>Clear Markers</Text>
           </TouchableOpacity>
         </View>
