@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, Platform } from "react-native";
 import { Camera, useCameraDevice, useCodeScanner } from "react-native-vision-camera";
 import { useScanStore } from "../../hooks/useScanStore";
 import { theme } from "../../constants/theme";
@@ -49,7 +49,7 @@ export default function ScannerScreen() {
   const [permanentMarkers, setPermanentMarkers] = useState<Map<string, BarcodeBox>>(new Map());
   const [detectionTracks, setDetectionTracks] = useState<DetectionTrack[]>([]);
   const [torchOn, setTorchOn] = useState(false);
-  const [previewSize, setPreviewSize] = useState<{ width: number; height: number } | null>(null);
+  const [frameDimensions, setFrameDimensions] = useState({ width: 1280, height: 720 });
 
   const VF_WIDTH_RATIO = 0.80;
   const VF_HEIGHT_RATIO = 0.45; // Reduced from 0.55 to move scanning area higher
@@ -59,7 +59,6 @@ export default function ScannerScreen() {
   const MIN_ASPECT_RATIO = 0.5; // More lenient (was 0.7)
   const MAX_ASPECT_RATIO = 2; // More lenient (was 1.4)
   const TRACK_TIMEOUT = 1500; 
-  const MAX_VISIBLE_BOXES = 8; // Increase from 4 to show more simultaneous detections
   
   const { products, addScan, loadData, clearAll } = useScanStore();
   const device = useCameraDevice("back");
@@ -81,30 +80,7 @@ export default function ScannerScreen() {
 
   useEffect(() => {
     if (format) {
-      const cameraAspectRatio = format.videoWidth / format.videoHeight;
-      const screenAspectRatio = SCREEN_W / SCREEN_H;
-      
-      let previewWidth = SCREEN_W;
-      let previewHeight = SCREEN_H;
-      
-      if (cameraAspectRatio > screenAspectRatio) {
-        // Camera is wider - fit to height
-        previewHeight = SCREEN_H;
-        previewWidth = SCREEN_H * cameraAspectRatio;
-      } else {
-        // Camera is taller - fit to width
-        previewWidth = SCREEN_W;
-        previewHeight = SCREEN_W / cameraAspectRatio;
-      }
-      
-      setPreviewSize({ width: previewWidth, height: previewHeight });
-      console.log("[PREVIEW SIZE]", { 
-        screen: { w: SCREEN_W, h: SCREEN_H }, 
-        camera: { w: format.videoWidth, h: format.videoHeight },
-        preview: { w: previewWidth, h: previewHeight },
-        cameraAR: cameraAspectRatio.toFixed(2),
-        screenAR: screenAspectRatio.toFixed(2)
-      });
+      setFrameDimensions({ width: format.videoWidth, height: format.videoHeight });
     }
   }, [format]);
 
@@ -114,10 +90,52 @@ export default function ScannerScreen() {
   const vfT = (SCREEN_H - vfH) / 2 - 150;
 
   const viewfinderRect = { left: vfL, top: vfT, width: vfW, height: vfH };
-  console.log("[VIEWFINDER RECTANGLE]", viewfinderRect);
 
-  const pointInRect = (x: number, y: number, rect: { left: number; top: number; width: number; height: number }) =>
-    x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height;
+
+
+  // --- COORDINATE SCALING FOR 'CONTAIN' MODE ---
+  const adjustRect = (rect: { x: number; y: number; width: number; height: number }) => {
+    const { width: frameW, height: frameH } = frameDimensions;
+    
+    // Detect if we need to swap dimensions (Android Portrait)
+    const isPortraitUI = SCREEN_H > SCREEN_W;
+    const isFrameLandscape = frameW > frameH;
+    const shouldSwap = Platform.OS === 'android' && isPortraitUI && isFrameLandscape;
+
+    // 1. Determine the "Visual" dimensions of the video as seen on screen
+    const visualW = shouldSwap ? frameH : frameW;
+    const visualH = shouldSwap ? frameW : frameH;
+
+    // 2. Calculate Scale & Offsets (Black bars)
+    const scale = Math.min(SCREEN_W / visualW, SCREEN_H / visualH);
+    
+    const displayedWidth = visualW * scale;
+    const displayedHeight = visualH * scale;
+    
+    const offsetX = (SCREEN_W - displayedWidth) / 2;
+    const offsetY = (SCREEN_H - displayedHeight) / 2;
+
+    // 3. Map Coordinates
+    if (shouldSwap) {
+        // ✅ ANDROID FIX: Swap X/Y and Width/Height
+        // The camera's "X" is the screen's "Top" (Y)
+        // The camera's "Y" is the screen's "Left" (X)
+        return {
+            left: (rect.y * scale) + offsetX,
+            top: (rect.x * scale) + offsetY,
+            width: rect.height * scale,
+            height: rect.width * scale,
+        };
+    }
+
+    // ✅ STANDARD (iOS or Android Landscape)
+    return {
+      left: (rect.x * scale) + offsetX,
+      top: (rect.y * scale) + offsetY,
+      width: rect.width * scale,
+      height: rect.height * scale,
+    };
+  };
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -144,11 +162,7 @@ export default function ScannerScreen() {
 
         const frame = code.frame;
         
-        const centerX = frame.x + frame.width / 2;
-        const centerY = frame.y + frame.height / 2;
-        const inViewfinder = pointInRect(centerX, centerY, viewfinderRect);
-        if (!inViewfinder) continue;
-
+        // Basic validation only
         const boxArea = frame.width * frame.height;
         if (boxArea / screenArea < MIN_BOX_AREA_RATIO) continue;
 
@@ -182,9 +196,37 @@ export default function ScannerScreen() {
             
             const productId = data.split("-")[0];
             const existing = products[productId];
-            if (existing?.codes.includes(data)) continue;
+            
+            // Check if already scanned - add to markers but don't save again
+            if (existing?.codes.includes(data)) {
+              console.log("⚠️ Already scanned:", data);
+              setScannedCodes((prev) => new Set([...prev, data]));
+              
+              if (!permanentMarkers.has(data)) {
+                const newBox: BarcodeBox = {
+                  id: `permanent-${data}`,
+                  data,
+                  color: theme.colors.accent,
+                  frame: frame,
+                  timestamp: Date.now(),
+                };
+                setPermanentMarkers((prev) => new Map(prev).set(data, newBox));
+              }
+              continue;
+            }
             
             setScannedCodes((prev) => new Set([...prev, data]));
+            
+            // Add marker immediately when marked as scanned
+            if (!permanentMarkers.has(data)) {
+              setPermanentMarkers((prev) => new Map(prev).set(data, {
+                id: `permanent-${data}`,
+                data,
+                color: theme.colors.accent,
+                frame: frame,
+                timestamp: Date.now(),
+              }));
+            }
             
             (async () => {
               let scanSuccess = false;
@@ -211,12 +253,14 @@ export default function ScannerScreen() {
                 setBarcodeBoxes((prev) => prev.filter((x) => x.id !== id));
                 if (!scanSuccess) {
                   setScannedCodes((prev) => { const newSet = new Set(prev); newSet.delete(data); return newSet; });
+                  // Remove marker if save failed
+                  setPermanentMarkers((prev) => {
+                    const newMap = new Map(prev);
+                    newMap.delete(data);
+                    return newMap;
+                  });
                 }
               }, scanSuccess ? 1800 : 500);
-              
-              if (scanSuccess && !permanentMarkers.has(data)) {
-                setPermanentMarkers((prev) => new Map(prev).set(data, { ...newBox, id: `permanent-${data}` }));
-              }
             })();
           }
         } else {
@@ -231,7 +275,23 @@ export default function ScannerScreen() {
       }
 
       setDetectionTracks(newTracks);
-    }, [scannedCodes, products, permanentMarkers, viewfinderRect, addScan, detectionTracks]),
+      
+      setPermanentMarkers((prevMarkers) => {
+        const updatedMarkers = new Map(prevMarkers);
+        for (const track of newTracks) {
+          if (scannedCodes.has(track.code)) {
+            updatedMarkers.set(track.code, {
+              id: `permanent-${track.code}`,
+              data: track.code,
+              color: theme.colors.accent,
+              frame: track.frame,
+              timestamp: now,
+            });
+          }
+        }
+        return updatedMarkers;
+      });
+    }, [scannedCodes, products, permanentMarkers, addScan, detectionTracks]),
   });
 
   if (hasPermission === null) return <Text>Requesting camera permission…</Text>;
@@ -249,76 +309,67 @@ export default function ScannerScreen() {
           codeScanner={codeScanner}
           format={format}
           fps={30}
-          videoStabilizationMode= "auto"
+          videoStabilizationMode="auto"
+          resizeMode="contain"
           torch={torchOn ? "on" : "off"}
         />
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           <View style={{ position: "absolute", left: vfL, top: vfT, width: vfW, height: vfH, borderRadius: 16, borderWidth: 3, borderColor: theme.colors.accent }} />
           
-          {/* Checkmarks for successful scans */}
-          {barcodeBoxes.filter(b => b.color === theme.colors.accent).map((b, index) => (
-            <View 
-              key={b.id} 
-              style={{ 
-                position: "absolute", 
-                bottom: 20 + (index * 60),
-                right: 20,
-                backgroundColor: "#00FF00",
-                width: 50,
-                height: 50,
-                borderRadius: 25,
-                alignItems: "center",
-                justifyContent: "center",
-                shadowColor: "#000",
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.3,
-                shadowRadius: 4,
-                elevation: 5
-              }}
-            >
-              <MaterialIcons name="check" size={32} color="white" />
-            </View>
-          ))}
-          
-          {/* Red X for failed scans */}
-          {barcodeBoxes.filter(b => b.color === theme.colors.danger).map((b, index) => (
-            <View 
-              key={b.id} 
-              style={{ 
-                position: "absolute", 
-                bottom: 20 + (index * 60),
-                right: 20,
-                backgroundColor: "#FF0000",
-                width: 50,
-                height: 50,
-                borderRadius: 25,
-                alignItems: "center",
-                justifyContent: "center",
-                shadowColor: "#000",
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.3,
-                shadowRadius: 4,
-                elevation: 5
-              }}
-            >
-              <MaterialIcons name="close" size={32} color="white" />
-            </View>
-          ))}
-          {Array.from(permanentMarkers.values()).map((marker) => (
-            <View key={marker.id} style={{ position: "absolute", left: marker.frame.x, top: marker.frame.y, width: marker.frame.width, height: marker.frame.height, borderWidth: 3, borderColor: "#FFD700", borderRadius: 8, backgroundColor: "rgba(255, 215, 0, 0.15)", display: "none" }}>
-              <View style={{ position: "absolute", top: -25, left: 0, backgroundColor: "rgba(255, 215, 0, 0.9)", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 }}>
-                <Text style={{ color: "#000", fontSize: 11, fontWeight: "bold" }}>{marker.data.split("-")[0]}</Text>
+          {/* --- YEŞIL DİKDÖRTGEN VE CHECKMARK KATMANI --- */}
+          {Array.from(permanentMarkers.values()).map((marker) => {
+            // Kutunun ekrandaki yerini hesapla
+            const styleRect = adjustRect(marker.frame);
+            
+            // İkon boyutunu kutunun boyutuna göre dinamik ayarla (Çok küçük veya çok büyük olmasın)
+            const badgeSize = Math.min(styleRect.width * 0.5, 40); 
+            const badgeRadius = badgeSize / 2;
+            const iconSize = badgeSize * 0.7;
+
+            return (
+              <View
+                key={marker.data}
+                style={{
+                  position: "absolute",
+                  left: styleRect.left,
+                  top: styleRect.top,
+                  width: styleRect.width,
+                  height: styleRect.height,
+                  // DIŞ ÇERÇEVE (Yeşil Dikdörtgen)
+                  borderWidth: 2,
+                  borderColor: "#00FF00", 
+                  backgroundColor: "rgba(0, 255, 0, 0.1)", // Hafif saydam yeşil dolgu
+                  borderRadius: 4,
+                  // İçindeki ikonu tam ortaya hizala
+                  justifyContent: 'center',
+                  alignItems: 'center'
+                }}
+              >
+                {/* ORTA İKON (Yeşil Daire + Siyah Tik) */}
+                <View style={{
+                    backgroundColor: '#00FF00', 
+                    width: badgeSize,
+                    height: badgeSize,
+                    borderRadius: badgeRadius,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    // Gölge efektleri
+                    shadowColor: "#000",
+                    shadowOpacity: 0.3,
+                    shadowRadius: 2,
+                    elevation: 3
+                }}>
+                  <MaterialIcons name="check" size={iconSize} color="black" style={{fontWeight: 'bold'}} />
+                </View>
               </View>
-            </View>
-          ))}
+            );
+          })}
         </View>
         <View style={styles.debugInfo}>
-          <Text style={styles.debugText}>Boxes: {barcodeBoxes.length} | Markers: {permanentMarkers.size}</Text>
+          <Text style={styles.debugText}>Saved: {Object.values(products).reduce((sum, p) => sum + p.codes.length, 0)} | Markers: {permanentMarkers.size}</Text>
           <Text style={styles.debugText}>Products: {Object.keys(products).length} | Tracks: {detectionTracks.length}</Text>
           <Text style={styles.debugText}>Screen: {Math.round(SCREEN_W)}x{Math.round(SCREEN_H)}</Text>
-          {previewSize && (
-            <Text style={styles.debugText}>Preview: {Math.round(previewSize.width)}x{Math.round(previewSize.height)}</Text>
-          )}
+          <Text style={styles.debugText}>Format: {format?.videoWidth}x{format?.videoHeight}</Text>
           <TouchableOpacity onPress={() => { setPermanentMarkers(new Map()); setScannedCodes(new Set()); setDetectionTracks([]); }} style={styles.clearMarkersBtn}>
             <Text style={styles.clearMarkersBtnText}>Clear Markers</Text>
           </TouchableOpacity>
