@@ -7,17 +7,23 @@ import { MaterialIcons } from "@expo/vector-icons";
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
 
+// Bottom panel yüksekliği çıkarılmış gerçek kamera alanı
+const BOTTOM_PANEL_HEIGHT = 280;
+const CAMERA_AREA_H = SCREEN_H - BOTTOM_PANEL_HEIGHT;
+
 interface BarcodeBox {
   id: string;
   data: string;
   color: string;
   frame: { x: number; y: number; width: number; height: number };
+  corners?: { x: number; y: number }[]; // QR kodun 4 köşesi
   timestamp: number;
 }
 
 interface DetectionTrack {
   code: string;
   frame: { x: number; y: number; width: number; height: number };
+  corners?: { x: number; y: number }[];
   hitCount: number;
   lastSeen: number;
 }
@@ -91,50 +97,111 @@ export default function ScannerScreen() {
 
   const viewfinderRect = { left: vfL, top: vfT, width: vfW, height: vfH };
 
-
-
-  // --- COORDINATE SCALING FOR 'CONTAIN' MODE ---
-  const adjustRect = (rect: { x: number; y: number; width: number; height: number }) => {
+  // --- TEK NOKTA DÖNÜŞÜMÜ (Corner tabanlı) ---
+  const adjustPoint = (point: { x: number; y: number }) => {
     const { width: frameW, height: frameH } = frameDimensions;
-    
-    // Detect if we need to swap dimensions (Android Portrait)
-    const isPortraitUI = SCREEN_H > SCREEN_W;
+
+    const isPortraitUI = CAMERA_AREA_H > SCREEN_W;
     const isFrameLandscape = frameW > frameH;
     const shouldSwap = Platform.OS === 'android' && isPortraitUI && isFrameLandscape;
 
-    // 1. Determine the "Visual" dimensions of the video as seen on screen
-    const visualW = shouldSwap ? frameH : frameW;
-    const visualH = shouldSwap ? frameW : frameH;
-
-    // 2. Calculate Scale & Offsets (Black bars)
-    const scale = Math.min(SCREEN_W / visualW, SCREEN_H / visualH);
-    
-    const displayedWidth = visualW * scale;
-    const displayedHeight = visualH * scale;
-    
-    const offsetX = (SCREEN_W - displayedWidth) / 2;
-    const offsetY = (SCREEN_H - displayedHeight) / 2;
-
-    // 3. Map Coordinates
     if (shouldSwap) {
-        // ✅ ANDROID FIX: Swap X/Y and Width/Height
-        // The camera's "X" is the screen's "Top" (Y)
-        // The camera's "Y" is the screen's "Left" (X)
-        return {
-            left: (rect.y * scale) + offsetX,
-            top: (rect.x * scale) + offsetY,
-            width: rect.height * scale,
-            height: rect.width * scale,
-        };
-    }
+      // Android Portrait - CONTAIN mode
+      // Frame 1280x720 (landscape) -> Ekranda 720x1280 gibi döndürülmüş gösteriliyor
+      const rotatedFrameW = frameH; // 720
+      const rotatedFrameH = frameW; // 1280
+      
+      // Contain mode: Aspect ratio koruyarak sığdır
+      const scale = Math.min(SCREEN_W / rotatedFrameW, CAMERA_AREA_H / rotatedFrameH);
+      const displayedW = rotatedFrameW * scale;
+      const displayedH = rotatedFrameH * scale;
+      
+      // Ortalama için offset
+      const offsetX = (SCREEN_W - displayedW) / 2;
+      const offsetY = (CAMERA_AREA_H - displayedH) / 2;
 
-    // ✅ STANDARD (iOS or Android Landscape)
+      // 90° saat yönünde rotasyon dönüşümü
+      // Sensör (x,y) -> Ekran (frameH - y, x)
+      return {
+        x: ((frameH - point.y) / frameH) * displayedW + offsetX,
+        y: (point.x / frameW) * displayedH + offsetY,
+      };
+    } else {
+      // iOS veya Landscape
+      const scale = Math.min(SCREEN_W / frameW, CAMERA_AREA_H / frameH);
+      const displayedW = frameW * scale;
+      const displayedH = frameH * scale;
+      const offsetX = (SCREEN_W - displayedW) / 2;
+      const offsetY = (CAMERA_AREA_H - displayedH) / 2;
+
+      return {
+        x: (point.x / frameW) * displayedW + offsetX,
+        y: (point.y / frameH) * displayedH + offsetY,
+      };
+    }
+  };
+
+  // --- CORNERS'DAN BOUNDING BOX HESAPLA ---
+  const cornersToRect = (corners: { x: number; y: number }[]) => {
+    if (!corners || corners.length < 4) return null;
+    
+    // Tüm köşeleri ekran koordinatlarına dönüştür
+    const screenCorners = corners.map(c => adjustPoint(c));
+    
+    // Bounding box hesapla
+    const xs = screenCorners.map(c => c.x);
+    const ys = screenCorners.map(c => c.y);
+    
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    
     return {
-      left: (rect.x * scale) + offsetX,
-      top: (rect.y * scale) + offsetY,
-      width: rect.width * scale,
-      height: rect.height * scale,
+      left: minX,
+      top: minY,
+      width: maxX - minX,
+      height: maxY - minY,
     };
+  };
+
+  // --- ESKİ RECT DÖNÜŞÜMÜ (Fallback) ---
+  const adjustRect = (rect: { x: number; y: number; width: number; height: number }) => {
+    const { width: frameW, height: frameH } = frameDimensions;
+
+    const isPortraitUI = CAMERA_AREA_H > SCREEN_W;
+    const isFrameLandscape = frameW > frameH;
+    const shouldSwap = Platform.OS === 'android' && isPortraitUI && isFrameLandscape;
+
+    if (shouldSwap) {
+      const rotatedFrameW = frameH;
+      const rotatedFrameH = frameW;
+      const scale = Math.min(SCREEN_W / rotatedFrameW, CAMERA_AREA_H / rotatedFrameH);
+      const displayedW = rotatedFrameW * scale;
+      const displayedH = rotatedFrameH * scale;
+      const offsetX = (SCREEN_W - displayedW) / 2;
+      const offsetY = (CAMERA_AREA_H - displayedH) / 2;
+
+      return {
+        left: ((frameH - rect.y - rect.height) / frameH) * displayedW + offsetX,
+        top: (rect.x / frameW) * displayedH + offsetY,
+        width: (rect.height / frameH) * displayedW,
+        height: (rect.width / frameW) * displayedH,
+      };
+    } else {
+      const scale = Math.min(SCREEN_W / frameW, CAMERA_AREA_H / frameH);
+      const displayedW = frameW * scale;
+      const displayedH = frameH * scale;
+      const offsetX = (SCREEN_W - displayedW) / 2;
+      const offsetY = (CAMERA_AREA_H - displayedH) / 2;
+
+      return {
+        left: (rect.x / frameW) * displayedW + offsetX,
+        top: (rect.y / frameH) * displayedH + offsetY,
+        width: (rect.width / frameW) * displayedW,
+        height: (rect.height / frameH) * displayedH,
+      };
+    }
   };
 
   useEffect(() => {
@@ -154,146 +221,172 @@ export default function ScannerScreen() {
       
       const now = Date.now();
       const screenArea = SCREEN_W * SCREEN_H;
-      const newTracks: DetectionTrack[] = [...detectionTracks];
 
-      for (const code of codes) {
-        const data = code.value;
-        if (!data || !code.frame) continue;
+      // State güncellemelerini fonksiyonel formda yap - race condition önleme
+      setDetectionTracks((prevTracks) => {
+        const newTracks: DetectionTrack[] = [...prevTracks];
+        const codesToProcess: { data: string; productId: string; frame: any; corners: any }[] = [];
 
-        const frame = code.frame;
-        
-        // Basic validation only
-        const boxArea = frame.width * frame.height;
-        if (boxArea / screenArea < MIN_BOX_AREA_RATIO) continue;
+        for (const code of codes) {
+          const data = code.value;
+          if (!data || !code.frame) continue;
 
-        const aspectRatio = frame.width / frame.height;
-        if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
+          const frame = code.frame;
+          const corners = code.corners;
 
-        if (scannedCodes.has(data)) continue;
+          // Basic validation
+          const boxArea = frame.width * frame.height;
+          if (boxArea / screenArea < MIN_BOX_AREA_RATIO) continue;
 
-        let matchedTrack: DetectionTrack | undefined;
-        let matchedIndex = -1;
-        
-        for (let i = 0; i < newTracks.length; i++) {
-          const track = newTracks[i];
-          if (track.code === data) {
-            const iou = calculateIoU(track.frame, frame);
-            if (iou >= IOU_THRESHOLD) {
-              matchedTrack = track;
-              matchedIndex = i;
-              break;
+          const aspectRatio = frame.width / frame.height;
+          if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
+
+          let matchedTrack: DetectionTrack | undefined;
+          
+          for (let i = 0; i < newTracks.length; i++) {
+            const track = newTracks[i];
+            if (track.code === data) {
+              const iou = calculateIoU(track.frame, frame);
+              if (iou >= IOU_THRESHOLD) {
+                matchedTrack = track;
+                break;
+              }
             }
+          }
+
+          if (matchedTrack) {
+            matchedTrack.hitCount++;
+            matchedTrack.frame = { ...frame };
+            matchedTrack.corners = corners ? [...corners] : undefined;
+            matchedTrack.lastSeen = now;
+          } else {
+            newTracks.push({
+              code: data,
+              frame: frame,
+              corners: corners ? [...corners] : undefined,
+              hitCount: 1,
+              lastSeen: now,
+            });
           }
         }
 
-        if (matchedTrack) {
-          matchedTrack.hitCount++;
-          matchedTrack.frame = { ...frame };
-          matchedTrack.lastSeen = now;
+        return newTracks;
+      });
 
-          if (matchedTrack.hitCount >= CONFIRMATION_THRESHOLD && !scannedCodes.has(data)) {
-            console.log("[QR CONFIRMED]", { data, frame, hitCount: matchedTrack.hitCount });
+      // Scanned codes kontrolü ve işleme - ayrı bir effect ile
+      for (const code of codes) {
+        const data = code.value;
+        if (!data || !code.frame) continue;
+        
+        const frame = code.frame;
+        const corners = code.corners;
+        const productId = data.split("-")[0];
+
+        // Atomik kontrol ve güncelleme
+        setScannedCodes((prevScanned) => {
+          if (prevScanned.has(data)) {
+            return prevScanned; // Zaten tarandı, değişiklik yok
+          }
+
+          // Yeni kod bulundu - işle
+          const newScanned = new Set([...prevScanned, data]);
+          
+          // Async işlemleri burada başlat
+          (async () => {
+            let scanSuccess = false;
             
-            const productId = data.split("-")[0];
+            // Önce database'de var mı kontrol et
             const existing = products[productId];
-            
-            // Check if already in database - add to markers but don't save again
             if (existing?.codes.includes(data)) {
               console.log("⚠️ Already in database:", data);
-              setScannedCodes((prev) => new Set([...prev, data]));
-              
-              if (!permanentMarkers.has(data)) {
-                const newBox: BarcodeBox = {
+              // Marker ekle
+              setPermanentMarkers((prev) => {
+                if (prev.has(data)) return prev;
+                return new Map(prev).set(data, {
                   id: `permanent-${data}`,
                   data,
                   color: theme.colors.accent,
                   frame: frame,
+                  corners: corners ? [...corners] : undefined,
                   timestamp: Date.now(),
-                };
-                setPermanentMarkers((prev) => new Map(prev).set(data, newBox));
-              }
-              continue;
+                });
+              });
+              return;
             }
-            
-            // Mark as scanned IMMEDIATELY to prevent duplicate processing
-            setScannedCodes((prev) => new Set([...prev, data]));
+
             console.log("🔄 Processing new code:", data);
             
-            (async () => {
-              let scanSuccess = false;
-              try {
-                await addScan(data, productId);
-                scanSuccess = true;
-                console.log("✅ Scan saved to database:", { data, productId });
-                
-                // Add marker ONLY after successful save
-                if (!permanentMarkers.has(data)) {
-                  setPermanentMarkers((prev) => new Map(prev).set(data, {
-                    id: `permanent-${data}`,
-                    data,
-                    color: theme.colors.accent,
-                    frame: frame,
-                    timestamp: Date.now(),
-                  }));
-                }
-              } catch (error) {
-                console.error("❌ Scan failed:", error);
-              }
+            try {
+              await addScan(data, productId);
+              scanSuccess = true;
+              console.log("✅ Scan saved to database:", { data, productId });
               
-              const id = `${data}-${Date.now()}`;
-              const newBox: BarcodeBox = {
-                id,
-                data,
-                color: scanSuccess ? theme.colors.accent : theme.colors.danger,
-                frame: frame,
-                timestamp: Date.now(),
-              };
-              
-              setBarcodeBoxes((prev) => [...prev, newBox].slice(-8)); // Increased to show 8 boxes
-              
-              setTimeout(() => {
-                setBarcodeBoxes((prev) => prev.filter((x) => x.id !== id));
-                if (!scanSuccess) {
-                  setScannedCodes((prev) => { const newSet = new Set(prev); newSet.delete(data); return newSet; });
-                  // Remove marker if save failed
-                  setPermanentMarkers((prev) => {
-                    const newMap = new Map(prev);
-                    newMap.delete(data);
-                    return newMap;
-                  });
-                }
-              }, scanSuccess ? 1800 : 500);
-            })();
-          }
-        } else {
-          newTracks.push({
-            code: data,
-            frame: frame,
-            hitCount: 1,
-            lastSeen: now,
-          });
-          console.log("[QR DETECTED]", { data, frame, hitCount: 1 });
-        }
+              // Marker ekle - atomik
+              setPermanentMarkers((prev) => {
+                if (prev.has(data)) return prev;
+                return new Map(prev).set(data, {
+                  id: `permanent-${data}`,
+                  data,
+                  color: theme.colors.accent,
+                  frame: frame,
+                  corners: corners ? [...corners] : undefined,
+                  timestamp: Date.now(),
+                });
+              });
+            } catch (error) {
+              console.error("❌ Scan failed:", error);
+              // Başarısızsa scannedCodes'dan kaldır
+              setScannedCodes((prev) => {
+                const newSet = new Set(prev);
+                newSet.delete(data);
+                return newSet;
+              });
+            }
+
+            // Geçici görsel feedback
+            const boxId = `${data}-${Date.now()}`;
+            setBarcodeBoxes((prev) => [...prev, {
+              id: boxId,
+              data,
+              color: scanSuccess ? theme.colors.accent : theme.colors.danger,
+              frame: frame,
+              timestamp: Date.now(),
+            }].slice(-8));
+
+            setTimeout(() => {
+              setBarcodeBoxes((prev) => prev.filter((x) => x.id !== boxId));
+            }, scanSuccess ? 1800 : 500);
+          })();
+
+          return newScanned;
+        });
       }
 
-      setDetectionTracks(newTracks);
-      
+      // Marker pozisyonlarını güncelle
       setPermanentMarkers((prevMarkers) => {
+        let hasChanges = false;
         const updatedMarkers = new Map(prevMarkers);
-        for (const track of newTracks) {
-          if (scannedCodes.has(track.code)) {
-            updatedMarkers.set(track.code, {
-              id: `permanent-${track.code}`,
-              data: track.code,
-              color: theme.colors.accent,
-              frame: track.frame,
-              timestamp: now,
+        
+        for (const code of codes) {
+          const data = code.value;
+          if (!data || !code.frame) continue;
+          
+          if (updatedMarkers.has(data)) {
+            const existing = updatedMarkers.get(data)!;
+            // Sadece pozisyon güncelle
+            updatedMarkers.set(data, {
+              ...existing,
+              frame: code.frame,
+              corners: code.corners ? [...code.corners] : undefined,
+              timestamp: Date.now(),
             });
+            hasChanges = true;
           }
         }
-        return updatedMarkers;
+        
+        return hasChanges ? updatedMarkers : prevMarkers;
       });
-    }, [scannedCodes, products, permanentMarkers, addScan, detectionTracks]),
+    }, [products, addScan]), // Dependency'leri minimize et
   });
 
   if (hasPermission === null) return <Text>Requesting camera permission…</Text>;
@@ -307,23 +400,73 @@ export default function ScannerScreen() {
           style={StyleSheet.absoluteFill} 
           device={device} 
           isActive={true}
-          videoHdr={true}
+          //videoHdr={true}
           codeScanner={codeScanner}
           format={format}
           fps={30}
-          videoStabilizationMode="auto"
+          videoStabilizationMode="off"
           resizeMode="contain"
           torch={torchOn ? "on" : "off"}
         />
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-          <View style={{ position: "absolute", left: vfL, top: vfT, width: vfW, height: vfH, borderRadius: 16, borderWidth: 3, borderColor: theme.colors.accent }} />
+          {/* Viewfinder dışındaki karanlık alan - 4 parça */}
+          {/* Üst karanlık alan */}
+          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, height: vfT, backgroundColor: 'rgba(0,0,0,0.6)' }} />
+          {/* Alt karanlık alan */}
+          <View style={{ position: 'absolute', top: vfT + vfH, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)' }} />
+          {/* Sol karanlık alan */}
+          <View style={{ position: 'absolute', top: vfT, left: 0, width: vfL, height: vfH, backgroundColor: 'rgba(0,0,0,0.6)' }} />
+          {/* Sağ karanlık alan */}
+          <View style={{ position: 'absolute', top: vfT, right: 0, width: vfL, height: vfH, backgroundColor: 'rgba(0,0,0,0.6)' }} />
+          
+          {/* Viewfinder çerçevesi */}
+          <View style={{ position: "absolute", left: vfL, top: vfT, width: vfW, height: vfH, borderWidth: 3, borderColor: theme.colors.accent }} />
           
           {/* --- YEŞIL DİKDÖRTGEN VE CHECKMARK KATMANI --- */}
           {Array.from(permanentMarkers.values()).map((marker) => {
-            // Kutunun ekrandaki yerini hesapla
-            const styleRect = adjustRect(marker.frame);
+            const rawFrame = marker.frame;
             
-            // İkon boyutunu kutunun boyutuna göre dinamik ayarla (Çok küçük veya çok büyük olmasın)
+            // Vision Camera koordinatlarını kullan + küçük offset düzeltmesi
+            // Gözlemlenen kayma: kutular sola ve yukarı kayıyor
+            const offsetAdjustX = 5; // Sağa kaydır
+            const offsetAdjustY = 5;// Aşağı kaydır
+            
+            let styleRect = {
+              left: rawFrame.x + offsetAdjustX,
+              top: rawFrame.y + offsetAdjustY,
+              width: rawFrame.width,
+              height: rawFrame.height,
+            };
+            
+            // Viewfinder sınırları
+            const minLeft = vfL;
+            const maxRight = vfL + vfW;
+            const minTop = vfT;
+            const maxBottom = vfT + vfH;
+            
+            // Eğer kutu tamamen viewfinder dışındaysa gösterme
+            if (styleRect.left + styleRect.width < minLeft || 
+                styleRect.left > maxRight ||
+                styleRect.top + styleRect.height < minTop || 
+                styleRect.top > maxBottom) {
+              return null;
+            }
+            
+            // Kutuyu viewfinder içine sınırla (clip)
+            const clippedLeft = Math.max(styleRect.left, minLeft);
+            const clippedTop = Math.max(styleRect.top, minTop);
+            const clippedRight = Math.min(styleRect.left + styleRect.width, maxRight);
+            const clippedBottom = Math.min(styleRect.top + styleRect.height, maxBottom);
+            
+            styleRect = {
+              left: clippedLeft,
+              top: clippedTop,
+              width: clippedRight - clippedLeft,
+              height: clippedBottom - clippedTop,
+            };
+            
+            if (styleRect.width < 10 || styleRect.height < 10) return null;
+            
             const badgeSize = Math.min(styleRect.width * 0.5, 40); 
             const badgeRadius = badgeSize / 2;
             const iconSize = badgeSize * 0.7;
@@ -369,10 +512,10 @@ export default function ScannerScreen() {
         </View>
         <View style={styles.debugInfo}>
           <Text style={styles.debugText}>Saved: {Object.values(products).reduce((sum, p) => sum + p.codes.length, 0)} | Markers: {permanentMarkers.size}</Text>
-          <Text style={styles.debugText}>Scanned: {scannedCodes.size} | Tracks: {detectionTracks.length}</Text>
-          <Text style={styles.debugText}>Products: {Object.keys(products).length}</Text>
           <Text style={styles.debugText}>Screen: {Math.round(SCREEN_W)}x{Math.round(SCREEN_H)}</Text>
-          <Text style={styles.debugText}>Format: {format?.videoWidth}x{format?.videoHeight}</Text>
+          <Text style={styles.debugText}>CamArea: {Math.round(SCREEN_W)}x{Math.round(CAMERA_AREA_H)}</Text>
+          <Text style={styles.debugText}>Frame: {frameDimensions.width}x{frameDimensions.height}</Text>
+          <Text style={styles.debugText}>Scale: {(Math.min(SCREEN_W / frameDimensions.height, CAMERA_AREA_H / frameDimensions.width)).toFixed(3)}</Text>
           <TouchableOpacity onPress={() => { setPermanentMarkers(new Map()); setScannedCodes(new Set()); setDetectionTracks([]); }} style={styles.clearMarkersBtn}>
             <Text style={styles.clearMarkersBtnText}>Clear Markers</Text>
           </TouchableOpacity>
@@ -390,11 +533,26 @@ export default function ScannerScreen() {
           </TouchableOpacity>
         </View>
         <ScrollView style={{ flex: 1 }}>
-          {Object.values(products).map((p) => (
+          {Object.values(products)
+            .sort((a, b) => a.id.localeCompare(b.id)) // Ürün ID'sine göre sırala
+            .map((p) => (
             <View key={p.id} style={styles.card}>
-              <View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={styles.productName}>{p.id}</Text>
-                <Text style={styles.codeCount}>{p.codes.length} pcs</Text>
+                <View style={styles.countBadge}>
+                  <Text style={styles.countBadgeText}>{p.codes.length}</Text>
+                </View>
+              </View>
+              <View style={styles.codesContainer}>
+                {p.codes
+                  .slice() // Orijinali değiştirmemek için kopya
+                  .sort((a, b) => a.localeCompare(b)) // Kodları alfabetik sırala
+                  .map((code, index) => (
+                  <View key={code} style={styles.codeItem}>
+                    <MaterialIcons name="qr-code-2" size={14} color={theme.colors.subtleText} />
+                    <Text style={styles.codeText}>{code}</Text>
+                  </View>
+                ))}
               </View>
             </View>
           ))}
@@ -420,8 +578,13 @@ const styles = StyleSheet.create({
   title: { fontFamily: theme.fonts.bold, fontSize: 17, color: theme.colors.text, marginBottom: 0 },
   torchButton: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, borderRadius: theme.radius.md, gap: 6 },
   torchButtonText: { color: "white", fontFamily: theme.fonts.medium, fontSize: 14 },
-  card: { backgroundColor: theme.colors.background, borderRadius: theme.radius.md, padding: theme.spacing.lg, marginBottom: theme.spacing.sm },
-  productName: { fontFamily: theme.fonts.medium, fontSize: 20, color: theme.colors.text },
+  card: { backgroundColor: theme.colors.background, borderRadius: theme.radius.md, padding: theme.spacing.md, marginBottom: theme.spacing.sm },
+  productName: { fontFamily: theme.fonts.bold, fontSize: 16, color: theme.colors.text },
+  countBadge: { backgroundColor: theme.colors.accent, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
+  countBadgeText: { color: "white", fontFamily: theme.fonts.bold, fontSize: 14 },
+  codesContainer: { marginTop: theme.spacing.sm, borderTopWidth: 1, borderTopColor: '#E5E5E5', paddingTop: theme.spacing.sm },
+  codeItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 3, gap: 6 },
+  codeText: { fontSize: 12, fontFamily: theme.fonts.regular, color: theme.colors.subtleText },
   codeCount: { color: theme.colors.subtleText, fontSize: 12 },
   clearButton: { marginTop: theme.spacing.lg, backgroundColor: theme.colors.danger, flexDirection: "row", alignItems: "center", justifyContent: "center", borderRadius: theme.radius.md, paddingVertical: 10, gap: 8 },
   clearButtonText: { color: "white", fontFamily: theme.fonts.medium },
