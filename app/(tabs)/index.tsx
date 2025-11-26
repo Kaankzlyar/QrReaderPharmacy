@@ -219,174 +219,176 @@ export default function ScannerScreen() {
     onCodeScanned: useCallback((codes) => {
       if (codes.length === 0) return;
       
-      const now = Date.now();
-      const screenArea = SCREEN_W * SCREEN_H;
+      // State güncellemelerini render döngüsü dışına taşı
+      queueMicrotask(() => {
+        const now = Date.now();
+        const screenArea = SCREEN_W * SCREEN_H;
 
-      // State güncellemelerini fonksiyonel formda yap - race condition önleme
-      setDetectionTracks((prevTracks) => {
-        const newTracks: DetectionTrack[] = [...prevTracks];
-        const codesToProcess: { data: string; productId: string; frame: any; corners: any }[] = [];
+        // State güncellemelerini fonksiyonel formda yap - race condition önleme
+        setDetectionTracks((prevTracks) => {
+          const newTracks: DetectionTrack[] = [...prevTracks];
 
-        for (const code of codes) {
-          const data = code.value;
-          if (!data || !code.frame) continue;
+          for (const code of codes) {
+            const data = code.value;
+            if (!data || !code.frame) continue;
 
-          const frame = code.frame;
-          const corners = code.corners;
+            const frame = code.frame;
+            const corners = code.corners;
 
-          // Basic validation
-          const boxArea = frame.width * frame.height;
-          if (boxArea / screenArea < MIN_BOX_AREA_RATIO) continue;
+            // Basic validation
+            const boxArea = frame.width * frame.height;
+            if (boxArea / screenArea < MIN_BOX_AREA_RATIO) continue;
 
-          const aspectRatio = frame.width / frame.height;
-          if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
+            const aspectRatio = frame.width / frame.height;
+            if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
 
-          let matchedTrack: DetectionTrack | undefined;
-          
-          for (let i = 0; i < newTracks.length; i++) {
-            const track = newTracks[i];
-            if (track.code === data) {
-              const iou = calculateIoU(track.frame, frame);
-              if (iou >= IOU_THRESHOLD) {
-                matchedTrack = track;
-                break;
+            let matchedTrack: DetectionTrack | undefined;
+            
+            for (let i = 0; i < newTracks.length; i++) {
+              const track = newTracks[i];
+              if (track.code === data) {
+                const iou = calculateIoU(track.frame, frame);
+                if (iou >= IOU_THRESHOLD) {
+                  matchedTrack = track;
+                  break;
+                }
               }
             }
-          }
 
-          if (matchedTrack) {
-            matchedTrack.hitCount++;
-            matchedTrack.frame = { ...frame };
-            matchedTrack.corners = corners ? [...corners] : undefined;
-            matchedTrack.lastSeen = now;
-          } else {
-            newTracks.push({
-              code: data,
-              frame: frame,
-              corners: corners ? [...corners] : undefined,
-              hitCount: 1,
-              lastSeen: now,
-            });
-          }
-        }
-
-        return newTracks;
-      });
-
-      // Scanned codes kontrolü ve işleme - ayrı bir effect ile
-      for (const code of codes) {
-        const data = code.value;
-        if (!data || !code.frame) continue;
-        
-        const frame = code.frame;
-        const corners = code.corners;
-        const productId = data.split("-")[0];
-
-        // Atomik kontrol ve güncelleme
-        setScannedCodes((prevScanned) => {
-          if (prevScanned.has(data)) {
-            return prevScanned; // Zaten tarandı, değişiklik yok
-          }
-
-          // Yeni kod bulundu - işle
-          const newScanned = new Set([...prevScanned, data]);
-          
-          // Async işlemleri burada başlat
-          (async () => {
-            let scanSuccess = false;
-            
-            // Önce database'de var mı kontrol et
-            const existing = products[productId];
-            if (existing?.codes.includes(data)) {
-              console.log("⚠️ Already in database:", data);
-              // Marker ekle
-              setPermanentMarkers((prev) => {
-                if (prev.has(data)) return prev;
-                return new Map(prev).set(data, {
-                  id: `permanent-${data}`,
-                  data,
-                  color: theme.colors.accent,
-                  frame: frame,
-                  corners: corners ? [...corners] : undefined,
-                  timestamp: Date.now(),
-                });
-              });
-              return;
-            }
-
-            console.log("🔄 Processing new code:", data);
-            
-            try {
-              await addScan(data, productId);
-              scanSuccess = true;
-              console.log("✅ Scan saved to database:", { data, productId });
-              
-              // Marker ekle - atomik
-              setPermanentMarkers((prev) => {
-                if (prev.has(data)) return prev;
-                return new Map(prev).set(data, {
-                  id: `permanent-${data}`,
-                  data,
-                  color: theme.colors.accent,
-                  frame: frame,
-                  corners: corners ? [...corners] : undefined,
-                  timestamp: Date.now(),
-                });
-              });
-            } catch (error) {
-              console.error("❌ Scan failed:", error);
-              // Başarısızsa scannedCodes'dan kaldır
-              setScannedCodes((prev) => {
-                const newSet = new Set(prev);
-                newSet.delete(data);
-                return newSet;
+            if (matchedTrack) {
+              matchedTrack.hitCount++;
+              matchedTrack.frame = { ...frame };
+              matchedTrack.corners = corners ? [...corners] : undefined;
+              matchedTrack.lastSeen = now;
+            } else {
+              newTracks.push({
+                code: data,
+                frame: frame,
+                corners: corners ? [...corners] : undefined,
+                hitCount: 1,
+                lastSeen: now,
               });
             }
+          }
 
-            // Geçici görsel feedback
-            const boxId = `${data}-${Date.now()}`;
-            setBarcodeBoxes((prev) => [...prev, {
-              id: boxId,
-              data,
-              color: scanSuccess ? theme.colors.accent : theme.colors.danger,
-              frame: frame,
-              timestamp: Date.now(),
-            }].slice(-8));
-
-            setTimeout(() => {
-              setBarcodeBoxes((prev) => prev.filter((x) => x.id !== boxId));
-            }, scanSuccess ? 1800 : 500);
-          })();
-
-          return newScanned;
+          return newTracks;
         });
-      }
 
-      // Marker pozisyonlarını güncelle
-      setPermanentMarkers((prevMarkers) => {
-        let hasChanges = false;
-        const updatedMarkers = new Map(prevMarkers);
-        
+        // Scanned codes kontrolü ve işleme
         for (const code of codes) {
           const data = code.value;
           if (!data || !code.frame) continue;
           
-          if (updatedMarkers.has(data)) {
-            const existing = updatedMarkers.get(data)!;
-            // Sadece pozisyon güncelle
-            updatedMarkers.set(data, {
-              ...existing,
-              frame: code.frame,
-              corners: code.corners ? [...code.corners] : undefined,
-              timestamp: Date.now(),
-            });
-            hasChanges = true;
-          }
+          const frame = code.frame;
+          const corners = code.corners;
+          const productId = data.split("-")[0];
+
+          // Atomik kontrol ve güncelleme
+          setScannedCodes((prevScanned) => {
+            if (prevScanned.has(data)) {
+              return prevScanned; // Zaten tarandı, değişiklik yok
+            }
+
+            // Yeni kod bulundu - işle
+            const newScanned = new Set([...prevScanned, data]);
+            
+            // Async işlemleri burada başlat
+            (async () => {
+              let scanSuccess = false;
+              
+              // Önce database'de var mı kontrol et
+              const existing = products[productId];
+              if (existing?.codes.includes(data)) {
+                console.log("⚠️ Already in database:", data);
+                // Marker ekle
+                setPermanentMarkers((prev) => {
+                  if (prev.has(data)) return prev;
+                  return new Map(prev).set(data, {
+                    id: `permanent-${data}`,
+                    data,
+                    color: theme.colors.accent,
+                    frame: frame,
+                    corners: corners ? [...corners] : undefined,
+                    timestamp: Date.now(),
+                  });
+                });
+                return;
+              }
+
+              console.log("🔄 Processing new code:", data);
+              
+              try {
+                await addScan(data, productId);
+                scanSuccess = true;
+                console.log("✅ Scan saved to database:", { data, productId });
+                
+                // Marker ekle - atomik
+                setPermanentMarkers((prev) => {
+                  if (prev.has(data)) return prev;
+                  return new Map(prev).set(data, {
+                    id: `permanent-${data}`,
+                    data,
+                    color: theme.colors.accent,
+                    frame: frame,
+                    corners: corners ? [...corners] : undefined,
+                    timestamp: Date.now(),
+                  });
+                });
+              } catch (error) {
+                console.error("❌ Scan failed:", error);
+                // Başarısızsa scannedCodes'dan kaldır
+                setScannedCodes((prev) => {
+                  const newSet = new Set(prev);
+                  newSet.delete(data);
+                  return newSet;
+                });
+              }
+
+              // Geçici görsel feedback
+              const boxId = `${data}-${Date.now()}`;
+              setBarcodeBoxes((prev) => [...prev, {
+                id: boxId,
+                data,
+                color: scanSuccess ? theme.colors.accent : theme.colors.danger,
+                frame: frame,
+                timestamp: Date.now(),
+              }].slice(-8));
+
+              setTimeout(() => {
+                setBarcodeBoxes((prev) => prev.filter((x) => x.id !== boxId));
+              }, scanSuccess ? 1800 : 500);
+            })();
+
+            return newScanned;
+          });
         }
-        
-        return hasChanges ? updatedMarkers : prevMarkers;
-      });
-    }, [products, addScan]), // Dependency'leri minimize et
+
+        // Marker pozisyonlarını güncelle
+        setPermanentMarkers((prevMarkers) => {
+          let hasChanges = false;
+          const updatedMarkers = new Map(prevMarkers);
+          
+          for (const code of codes) {
+            const data = code.value;
+            if (!data || !code.frame) continue;
+            
+            if (updatedMarkers.has(data)) {
+              const existing = updatedMarkers.get(data)!;
+              // Sadece pozisyon güncelle
+              updatedMarkers.set(data, {
+                ...existing,
+                frame: code.frame,
+                corners: code.corners ? [...code.corners] : undefined,
+                timestamp: Date.now(),
+              });
+              hasChanges = true;
+            }
+          }
+          
+          return hasChanges ? updatedMarkers : prevMarkers;
+        });
+      }); // queueMicrotask kapanışı
+    }, [products, addScan]),
   });
 
   if (hasPermission === null) return <Text>Requesting camera permission…</Text>;
@@ -428,8 +430,8 @@ export default function ScannerScreen() {
             
             // Vision Camera koordinatlarını kullan + küçük offset düzeltmesi
             // Gözlemlenen kayma: kutular sola ve yukarı kayıyor
-            const offsetAdjustX = 5; // Sağa kaydır
-            const offsetAdjustY = 5;// Aşağı kaydır
+            const offsetAdjustX = -40; // Sola kaydır
+            const offsetAdjustY = -80;// Yukarı kaydır
             
             let styleRect = {
               left: rawFrame.x + offsetAdjustX,
