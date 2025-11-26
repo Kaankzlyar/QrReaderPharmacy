@@ -1,42 +1,64 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-interface ScannedItem {
-  code: string;
-  productId: string;
-  timestamp: number;
+interface Product {
+  id: string;
+  codes: string[];
 }
 
 interface ScanState {
-  scannedItems: ScannedItem[];
+  products: Record<string, Product>;
   addScan: (code: string, productId: string) => Promise<void>;
   loadData: () => Promise<void>;
   clearAll: () => Promise<void>;
 }
 
 export const useScanStore = create<ScanState>((set, get) => ({
-  scannedItems: [],
+  products: {},
 
   loadData: async () => {
-    const saved = await AsyncStorage.getItem('scanned_items');
-    if (saved) set({ scannedItems: JSON.parse(saved) });
+    const saved = await AsyncStorage.getItem('scanned_products');
+    if (saved) set({ products: JSON.parse(saved) });
   },
 
   addScan: async (code, productId) => {
-    const current = [...get().scannedItems];
-    
-    current.push({
-      code,
-      productId,
-      timestamp: Date.now(),
+    return new Promise<void>((resolve, reject) => {
+      set((state) => {
+        const current = { ...state.products };
+        
+        // Initialize product if doesn't exist
+        if (!current[productId]) {
+          current[productId] = { id: productId, codes: [] };
+        }
+        
+        // Check if already exists
+        if (current[productId].codes.includes(code)) {
+          console.log('⚠️ Duplicate prevented in addScan:', code);
+          reject(new Error('Code already exists'));
+          return state; // Return unchanged state
+        }
+
+        // Add new code
+        current[productId].codes.push(code);
+        
+        // Save to AsyncStorage
+        AsyncStorage.setItem('scanned_products', JSON.stringify(current))
+          .then(() => {
+            console.log('💾 Saved to storage:', code);
+            resolve();
+          })
+          .catch((error) => {
+            console.error('❌ Storage failed:', error);
+            reject(error);
+          });
+        
+        return { products: current };
+      });
     });
-    
-    await AsyncStorage.setItem('scanned_items', JSON.stringify(current));
-    set({ scannedItems: current });
   },
 
   clearAll: async () => {
-    await AsyncStorage.removeItem('scanned_items');
-    set({ scannedItems: [] });
+    await AsyncStorage.removeItem('scanned_products');
+    set({ products: {} });
   },
 }));

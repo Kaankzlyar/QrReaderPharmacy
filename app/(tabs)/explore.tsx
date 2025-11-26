@@ -6,13 +6,21 @@ import { theme } from '../../constants/theme';
 import { MaterialIcons } from '@expo/vector-icons';
 
 export default function ProductsScreen() {
-  const { scannedItems, loadData, clearAll } = useScanStore();
+  const { products, loadData, clearAll } = useScanStore();
 
   useEffect(() => {
     loadData();
   }, []);
 
-  const totalProducts = new Set(scannedItems.map(item => item.productId)).size;
+  const scannedItems = Object.values(products).flatMap(product => 
+    product.codes.map(code => ({
+      productId: product.id,
+      code,
+      timestamp: Date.now()
+    }))
+  );
+
+  const totalProducts = Object.keys(products).length;
   const totalScans = scannedItems.length;
 
   return (
