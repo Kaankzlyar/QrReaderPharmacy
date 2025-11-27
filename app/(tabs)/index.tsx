@@ -219,8 +219,8 @@ export default function ScannerScreen() {
     onCodeScanned: useCallback((codes) => {
       if (codes.length === 0) return;
       
-      // State güncellemelerini render döngüsü dışına taşı
-      queueMicrotask(() => {
+      // State güncellemelerini render döngüsü dışına taşı - setTimeout kullan
+      setTimeout(() => {
         const now = Date.now();
         const screenArea = SCREEN_W * SCREEN_H;
 
@@ -275,6 +275,8 @@ export default function ScannerScreen() {
         });
 
         // Scanned codes kontrolü ve işleme
+        const codesToProcess: { data: string; frame: any; corners: any; productId: string }[] = [];
+        
         for (const code of codes) {
           const data = code.value;
           if (!data || !code.frame) continue;
@@ -283,84 +285,84 @@ export default function ScannerScreen() {
           const corners = code.corners;
           const productId = data.split("-")[0];
 
-          // Atomik kontrol ve güncelleme
+          // Atomik kontrol ve güncelleme - sadece Set güncelle, async işlem yapma
           setScannedCodes((prevScanned) => {
             if (prevScanned.has(data)) {
               return prevScanned; // Zaten tarandı, değişiklik yok
             }
-
-            // Yeni kod bulundu - işle
-            const newScanned = new Set([...prevScanned, data]);
-            
-            // Async işlemleri burada başlat
-            (async () => {
-              let scanSuccess = false;
-              
-              // Önce database'de var mı kontrol et
-              const existing = products[productId];
-              if (existing?.codes.includes(data)) {
-                console.log("⚠️ Already in database:", data);
-                // Marker ekle
-                setPermanentMarkers((prev) => {
-                  if (prev.has(data)) return prev;
-                  return new Map(prev).set(data, {
-                    id: `permanent-${data}`,
-                    data,
-                    color: theme.colors.accent,
-                    frame: frame,
-                    corners: corners ? [...corners] : undefined,
-                    timestamp: Date.now(),
-                  });
-                });
-                return;
-              }
-
-              console.log("🔄 Processing new code:", data);
-              
-              try {
-                await addScan(data, productId);
-                scanSuccess = true;
-                console.log("✅ Scan saved to database:", { data, productId });
-                
-                // Marker ekle - atomik
-                setPermanentMarkers((prev) => {
-                  if (prev.has(data)) return prev;
-                  return new Map(prev).set(data, {
-                    id: `permanent-${data}`,
-                    data,
-                    color: theme.colors.accent,
-                    frame: frame,
-                    corners: corners ? [...corners] : undefined,
-                    timestamp: Date.now(),
-                  });
-                });
-              } catch (error) {
-                console.error("❌ Scan failed:", error);
-                // Başarısızsa scannedCodes'dan kaldır
-                setScannedCodes((prev) => {
-                  const newSet = new Set(prev);
-                  newSet.delete(data);
-                  return newSet;
-                });
-              }
-
-              // Geçici görsel feedback
-              const boxId = `${data}-${Date.now()}`;
-              setBarcodeBoxes((prev) => [...prev, {
-                id: boxId,
-                data,
-                color: scanSuccess ? theme.colors.accent : theme.colors.danger,
-                frame: frame,
-                timestamp: Date.now(),
-              }].slice(-8));
-
-              setTimeout(() => {
-                setBarcodeBoxes((prev) => prev.filter((x) => x.id !== boxId));
-              }, scanSuccess ? 1800 : 500);
-            })();
-
-            return newScanned;
+            // İşlenecek kodları topla
+            codesToProcess.push({ data, frame, corners, productId });
+            return new Set([...prevScanned, data]);
           });
+        }
+
+        // Async işlemleri state callback'inin DIŞINDA yap
+        for (const { data, frame, corners, productId } of codesToProcess) {
+          (async () => {
+            let scanSuccess = false;
+            
+            // Önce database'de var mı kontrol et
+            const existing = products[productId];
+            if (existing?.codes.includes(data)) {
+              console.log("⚠️ Already in database:", data);
+              // Marker ekle
+              setPermanentMarkers((prev) => {
+                if (prev.has(data)) return prev;
+                return new Map(prev).set(data, {
+                  id: `permanent-${data}`,
+                  data,
+                  color: theme.colors.accent,
+                  frame: frame,
+                  corners: corners ? [...corners] : undefined,
+                  timestamp: Date.now(),
+                });
+              });
+              return;
+            }
+
+            console.log("🔄 Processing new code:", data);
+            
+            try {
+              await addScan(data, productId);
+              scanSuccess = true;
+              console.log("✅ Scan saved to database:", { data, productId });
+              
+              // Marker ekle - atomik
+              setPermanentMarkers((prev) => {
+                if (prev.has(data)) return prev;
+                return new Map(prev).set(data, {
+                  id: `permanent-${data}`,
+                  data,
+                  color: theme.colors.accent,
+                  frame: frame,
+                  corners: corners ? [...corners] : undefined,
+                  timestamp: Date.now(),
+                });
+              });
+            } catch (error) {
+              console.error("❌ Scan failed:", error);
+              // Başarısızsa scannedCodes'dan kaldır
+              setScannedCodes((prev) => {
+                const newSet = new Set(prev);
+                newSet.delete(data);
+                return newSet;
+              });
+            }
+
+            // Geçici görsel feedback
+            const boxId = `${data}-${Date.now()}`;
+            setBarcodeBoxes((prev) => [...prev, {
+              id: boxId,
+              data,
+              color: scanSuccess ? theme.colors.accent : theme.colors.danger,
+              frame: frame,
+              timestamp: Date.now(),
+            }].slice(-8));
+
+            setTimeout(() => {
+              setBarcodeBoxes((prev) => prev.filter((x) => x.id !== boxId));
+            }, scanSuccess ? 1800 : 500);
+          })();
         }
 
         // Marker pozisyonlarını güncelle
@@ -387,7 +389,7 @@ export default function ScannerScreen() {
           
           return hasChanges ? updatedMarkers : prevMarkers;
         });
-      }); // queueMicrotask kapanışı
+      }, 0); // setTimeout kapanışı
     }, [products, addScan]),
   });
 
@@ -412,13 +414,9 @@ export default function ScannerScreen() {
         />
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           {/* Viewfinder dışındaki karanlık alan - 4 parça */}
-          {/* Üst karanlık alan */}
           <View style={{ position: 'absolute', top: 0, left: 0, right: 0, height: vfT, backgroundColor: 'rgba(0,0,0,0.6)' }} />
-          {/* Alt karanlık alan */}
           <View style={{ position: 'absolute', top: vfT + vfH, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)' }} />
-          {/* Sol karanlık alan */}
           <View style={{ position: 'absolute', top: vfT, left: 0, width: vfL, height: vfH, backgroundColor: 'rgba(0,0,0,0.6)' }} />
-          {/* Sağ karanlık alan */}
           <View style={{ position: 'absolute', top: vfT, right: 0, width: vfL, height: vfH, backgroundColor: 'rgba(0,0,0,0.6)' }} />
           
           {/* Viewfinder çerçevesi */}
@@ -428,10 +426,14 @@ export default function ScannerScreen() {
           {Array.from(permanentMarkers.values()).map((marker) => {
             const rawFrame = marker.frame;
             
-            // Vision Camera koordinatlarını kullan + küçük offset düzeltmesi
-            // Gözlemlenen kayma: kutular sola ve yukarı kayıyor
-            const offsetAdjustX = -40; // Sola kaydır
-            const offsetAdjustY = -80;// Yukarı kaydır
+            // Dinamik offset hesaplama - ekran boyutuna oranla
+            // S25 Ultra (412x915) için -40, -80 değerleri referans alındı
+            // Oran: X için ~%9.7, Y için ~%8.7
+            const OFFSET_RATIO_X = -0.097; // Ekran genişliğinin %9.7'si kadar sola
+            const OFFSET_RATIO_Y = -0.087; // Ekran yüksekliğinin %8.7'si kadar yukarı
+            
+            const offsetAdjustX = SCREEN_W * OFFSET_RATIO_X;
+            const offsetAdjustY = SCREEN_H * OFFSET_RATIO_Y;
             
             let styleRect = {
               left: rawFrame.x + offsetAdjustX,
