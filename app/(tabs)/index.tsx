@@ -18,6 +18,7 @@ interface BarcodeBox {
   frame: { x: number; y: number; width: number; height: number };
   corners?: { x: number; y: number }[]; // QR kodun 4 köşesi
   timestamp: number;
+  isNew?: boolean; 
 }
 
 interface DetectionTrack {
@@ -28,7 +29,6 @@ interface DetectionTrack {
   lastSeen: number;
 }
 
-// Calculate Intersection over Union for two rectangles
 const calculateIoU = (
   rect1: { x: number; y: number; width: number; height: number },
   rect2: { x: number; y: number; width: number; height: number }
@@ -305,7 +305,7 @@ export default function ScannerScreen() {
             const existing = products[productId];
             if (existing?.codes.includes(data)) {
               console.log("⚠️ Already in database:", data);
-              // Marker ekle
+              // Marker ekle - isNew: false (zaten vardı)
               setPermanentMarkers((prev) => {
                 if (prev.has(data)) return prev;
                 return new Map(prev).set(data, {
@@ -315,6 +315,7 @@ export default function ScannerScreen() {
                   frame: frame,
                   corners: corners ? [...corners] : undefined,
                   timestamp: Date.now(),
+                  isNew: false, // Zaten database'de vardı
                 });
               });
               return;
@@ -327,7 +328,6 @@ export default function ScannerScreen() {
               scanSuccess = true;
               console.log("✅ Scan saved to database:", { data, productId });
               
-              // Marker ekle - atomik
               setPermanentMarkers((prev) => {
                 if (prev.has(data)) return prev;
                 return new Map(prev).set(data, {
@@ -337,6 +337,7 @@ export default function ScannerScreen() {
                   frame: frame,
                   corners: corners ? [...corners] : undefined,
                   timestamp: Date.now(),
+                  isNew: true, // Bu oturumda yeni tarandı
                 });
               });
             } catch (error) {
@@ -426,6 +427,10 @@ export default function ScannerScreen() {
           {Array.from(permanentMarkers.values()).map((marker) => {
             const rawFrame = marker.frame;
             
+            // isNew flag'e göre renk belirle: true = yeşil (yeni), false = sarı (zaten vardı)
+            const markerColor = marker.isNew === false ? "#FFD700" : "#00FF00"; // Sarı veya Yeşil
+            const bgColor = marker.isNew === false ? "rgba(255, 215, 0, 0.15)" : "rgba(0, 255, 0, 0.1)";
+            
             // Dinamik offset hesaplama - ekran boyutuna oranla
             // S25 Ultra (412x915) için -40, -80 değerleri referans alındı
             // Oran: X için ~%9.7, Y için ~%8.7
@@ -484,19 +489,19 @@ export default function ScannerScreen() {
                   top: styleRect.top,
                   width: styleRect.width,
                   height: styleRect.height,
-                  // DIŞ ÇERÇEVE (Yeşil Dikdörtgen)
+                  // DIŞ ÇERÇEVE (Yeşil veya Sarı Dikdörtgen)
                   borderWidth: 2,
-                  borderColor: "#00FF00", 
-                  backgroundColor: "rgba(0, 255, 0, 0.1)", // Hafif saydam yeşil dolgu
+                  borderColor: markerColor, 
+                  backgroundColor: bgColor,
                   borderRadius: 4,
                   // İçindeki ikonu tam ortaya hizala
                   justifyContent: 'center',
                   alignItems: 'center'
                 }}
               >
-                {/* ORTA İKON (Yeşil Daire + Siyah Tik) */}
+                {/* ORTA İKON (Renkli Daire + Siyah Tik) */}
                 <View style={{
-                    backgroundColor: '#00FF00', 
+                    backgroundColor: markerColor, 
                     width: badgeSize,
                     height: badgeSize,
                     borderRadius: badgeRadius,
@@ -562,7 +567,12 @@ export default function ScannerScreen() {
           ))}
           {Object.keys(products).length === 0 && <Text style={{ color: theme.colors.subtleText }}>No products scanned yet.</Text>}
         </ScrollView>
-        <TouchableOpacity style={styles.clearButton} onPress={clearAll}>
+        <TouchableOpacity style={styles.clearButton} onPress={() => {
+          clearAll();
+          setPermanentMarkers(new Map());
+          setScannedCodes(new Set());
+          setDetectionTracks([]);
+        }}>
           <MaterialIcons name="delete-outline" size={20} color="white" />
           <Text style={styles.clearButtonText}>Clear All</Text>
         </TouchableOpacity>
