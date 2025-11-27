@@ -48,6 +48,86 @@ const calculateIoU = (
   return intersection / union;
 };
 
+// GS1 DataMatrix formatını parse et
+// Örnek: (01)08699717010109(21)294405443(17)SKT:05.2030(10)25089184A
+// veya FNC1 karakterleri ile: ]d201086997170101092129440544317...
+const parseGS1Code = (rawData: string): { productId: string; serialNumber: string; fullCode: string } => {
+  let data = rawData;
+  
+  // GS1 DataMatrix prefix'lerini temizle
+  if (data.startsWith("]d2") || data.startsWith("]Q3") || data.startsWith("]C1")) {
+    data = data.substring(3);
+  }
+  
+  // AI (Application Identifier) pattern'leri
+  const aiPatterns: { [key: string]: RegExp } = {
+    gtin: /\(01\)(\d{14})/,          // GTIN-14
+    gtinShort: /\(01\)(\d{8,13})/,   // GTIN-8/12/13
+    serial: /\(21\)([^\(]+)/,         // Serial number
+    expiry: /\(17\)([^\(]+)/,         // Expiry date
+    batch: /\(10\)([^\(]+)/,          // Batch/Lot number
+  };
+  
+  // Parantezli format: (01)08699717010109(21)294405443
+  let gtin = "";
+  let serial = "";
+  
+  const gtinMatch = data.match(aiPatterns.gtin) || data.match(aiPatterns.gtinShort);
+  if (gtinMatch) {
+    gtin = gtinMatch[1];
+  }
+  
+  const serialMatch = data.match(aiPatterns.serial);
+  if (serialMatch) {
+    serial = serialMatch[1];
+  }
+  
+  // Parantez yoksa FNC1 format olabilir: 01086997170101092129440544317...
+  // AI'lar: 01 (14 digit), 21 (variable), 17 (6 digit), 10 (variable)
+  if (!gtin && !serial) {
+    // 01 ile başlıyorsa
+    if (data.startsWith("01") && data.length >= 16) {
+      gtin = data.substring(2, 16); // 14 digit GTIN
+      const rest = data.substring(16);
+      
+      // 21 ile devam ediyorsa (seri numarası)
+      if (rest.startsWith("21")) {
+        // Seri numarası 17 veya 10 AI'ına kadar devam eder
+        const serialEnd = rest.search(/(?:17|10)/);
+        if (serialEnd > 2) {
+          serial = rest.substring(2, serialEnd);
+        } else {
+          serial = rest.substring(2); // Sonuna kadar
+        }
+      }
+    }
+  }
+  
+  // Fallback: Eski format (PRODUCT-001 gibi)
+  if (!gtin && !serial) {
+    const parts = data.split("-");
+    if (parts.length >= 2) {
+      return {
+        productId: parts[0],
+        serialNumber: data,
+        fullCode: rawData,
+      };
+    }
+    // Hiçbir format uymadı, olduğu gibi kullan
+    return {
+      productId: data.substring(0, Math.min(14, data.length)),
+      serialNumber: data,
+      fullCode: rawData,
+    };
+  }
+  
+  return {
+    productId: gtin || "UNKNOWN",
+    serialNumber: serial || data,
+    fullCode: rawData,
+  };
+};
+
 export default function ScannerScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [barcodeBoxes, setBarcodeBoxes] = useState<BarcodeBox[]>([]);
@@ -215,7 +295,7 @@ export default function ScannerScreen() {
   }, []);
 
   const codeScanner = useCodeScanner({
-    codeTypes: ["qr"],
+    codeTypes: ["qr", "data-matrix"],
     onCodeScanned: useCallback((codes) => {
       if (codes.length === 0) return;
       
@@ -283,16 +363,20 @@ export default function ScannerScreen() {
           
           const frame = code.frame;
           const corners = code.corners;
-          const productId = data.split("-")[0];
+          
+          // GS1 formatını parse et
+          const parsed = parseGS1Code(data);
+          const productId = parsed.productId;
+          const uniqueCode = parsed.serialNumber; // Benzersiz seri numarası
 
           // Atomik kontrol ve güncelleme - sadece Set güncelle, async işlem yapma
           setScannedCodes((prevScanned) => {
-            if (prevScanned.has(data)) {
+            if (prevScanned.has(uniqueCode)) {
               return prevScanned; // Zaten tarandı, değişiklik yok
             }
             // İşlenecek kodları topla
-            codesToProcess.push({ data, frame, corners, productId });
-            return new Set([...prevScanned, data]);
+            codesToProcess.push({ data: uniqueCode, frame, corners, productId });
+            return new Set([...prevScanned, uniqueCode]);
           });
         }
 
