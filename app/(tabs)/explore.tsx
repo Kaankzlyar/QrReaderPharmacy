@@ -12,16 +12,8 @@ export default function ProductsScreen() {
     loadData();
   }, []);
 
-  const scannedItems = Object.values(products).flatMap(product => 
-    product.codes.map(code => ({
-      productId: product.id,
-      code,
-      timestamp: Date.now()
-    }))
-  );
-
   const totalProducts = Object.keys(products).length;
-  const totalScans = scannedItems.length;
+  const totalScans = Object.values(products).reduce((sum, p) => sum + p.codes.length, 0);
 
   return (
     <View style={styles.container}>
@@ -38,31 +30,39 @@ export default function ProductsScreen() {
 
       {/* Product List */}
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        {scannedItems.length === 0 ? (
+        {Object.keys(products).length === 0 ? (
           <View style={styles.emptyState}>
             <MaterialIcons name="inventory-2" size={64} color={theme.colors.subtleText} />
             <Text style={styles.emptyText}>No products scanned yet</Text>
             <Text style={styles.emptySubtext}>Scan QR codes to add products</Text>
           </View>
         ) : (
-          scannedItems.map((item) => (
-            <View key={item.code} style={styles.productCard}>
+          Object.values(products)
+            .sort((a, b) => a.id.localeCompare(b.id)) // Ürün ID'sine göre sırala
+            .map((product) => (
+            <View key={product.id} style={styles.productCard}>
               <View style={styles.productHeader}>
                 <MaterialIcons name="medication" size={24} color={theme.colors.accent} />
                 <View style={styles.productInfo}>
-                  <Text style={styles.productName}>{item.productId}</Text>
-                  <Text style={styles.productCount}>Code: {item.code}</Text>
+                  <Text style={styles.productName}>{product.id}</Text>
+                  <Text style={styles.productCount}>{product.codes.length} items</Text>
+                </View>
+                <View style={styles.countBadge}>
+                  <Text style={styles.countBadgeText}>{product.codes.length}</Text>
                 </View>
               </View>
               
-              {/* Timestamp */}
+              {/* Code List */}
               <View style={styles.codeList}>
-                <View style={styles.codeItem}>
-                  <MaterialIcons name="schedule" size={16} color={theme.colors.subtleText} />
-                  <Text style={styles.codeText}>
-                    {new Date(item.timestamp).toLocaleString()}
-                  </Text>
-                </View>
+                {product.codes
+                  .slice()
+                  .sort((a, b) => a.localeCompare(b)) // Kodları alfabetik sırala
+                  .map((code) => (
+                  <View key={code} style={styles.codeItem}>
+                    <MaterialIcons name="qr-code-2" size={16} color={theme.colors.subtleText} />
+                    <Text style={styles.codeText}>{code}</Text>
+                  </View>
+                ))}
               </View>
             </View>
           ))
@@ -70,7 +70,7 @@ export default function ProductsScreen() {
       </ScrollView>
 
       {/* Clear Button */}
-      {scannedItems.length > 0 && (
+      {totalScans > 0 && (
         <View style={styles.footer}>
           <TouchableOpacity style={styles.clearButton} onPress={clearAll}>
             <MaterialIcons name="delete-outline" size={20} color="white" />
@@ -174,6 +174,17 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.regular,
     color: theme.colors.text,
     marginLeft: 8,
+  },
+  countBadge: {
+    backgroundColor: theme.colors.accent,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  countBadgeText: {
+    color: 'white',
+    fontFamily: theme.fonts.bold,
+    fontSize: 14,
   },
   footer: {
     padding: theme.spacing.md,
